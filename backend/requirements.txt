@@ -1,0 +1,11 @@
+Django>=5.0
+djangorestframework
+django-cors-headers
+google-auth
+requests
+Pillow
+numpy
+celery[redis]
+anthropic
+python-dotenv
+psycopg[binary]>=3.2

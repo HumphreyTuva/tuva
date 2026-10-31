@@ -99,6 +99,7 @@ CELERY_BROKER_URL = env("REDIS_URL", "redis://localhost:6379/0")
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_ALWAYS_EAGER = env("CELERY_TASK_ALWAYS_EAGER", "0").strip().lower() in {"1", "true", "yes", "on"}
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"
     if env("EMAIL_HOST_USER")
@@ -106,11 +107,11 @@ EMAIL_BACKEND = (
 )
 EMAIL_HOST = env("EMAIL_HOST", "")
 EMAIL_PORT = int(env("EMAIL_PORT", "587"))
-EMAIL_USE_TLS = env("EMAIL_USE_TLS", "1") == "1"
+EMAIL_USE_TLS = env("EMAIL_USE_TLS", "1").strip().lower() in {"1", "true", "yes", "on"}
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", "")
-DEFAULT_FROM_EMAIL = f"TUVA <{EMAIL_HOST_USER or 'no-reply@tuva.local'}>"
-FRONTEND_URL = env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", f"TUVA <{EMAIL_HOST_USER or 'no-reply@tuva.local'}>")
+FRONTEND_URL = env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173").split(",", 1)[0].strip().rstrip("/")
 
 if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True

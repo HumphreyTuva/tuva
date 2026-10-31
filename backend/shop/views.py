@@ -1,6 +1,7 @@
 import os
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
@@ -102,7 +103,7 @@ def subscribe_alert(request):
         send_html.delay(
             email,
             "You're on the list",
-            branded("We'll let you know", f"We'll email you as soon as “{query}” is available.", "Keep browsing", os.environ.get("FRONTEND_URL", "")),
+            branded("We'll let you know", f"We'll email you as soon as “{query}” is available.", "Keep browsing", settings.FRONTEND_URL),
         )
     return Response({"ok": True}, status=201 if created else 200)
 
@@ -308,7 +309,7 @@ def mpesa_callback(request):
                                 "Thank you!",
                                 f"We received your M-PESA payment {order.receipt} for {order.product.name}.",
                                 "View store",
-                                os.environ.get("FRONTEND_URL", ""),
+                                settings.FRONTEND_URL,
                             )
                         transaction.on_commit(
                             lambda: send_html.delay(email, "Payment received", email_html),

@@ -14,7 +14,7 @@ if not SECRET_KEY:
 if not DEBUG and SECRET_KEY == "change-me":
     raise ValueError("Set a unique SECRET_KEY before running with DEBUG disabled.")
 
-ALLOWED_HOSTS = [host.strip() for host in env("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
+ALLOWED_HOSTS = [host.strip() for host in env("ALLOWED_HOSTS", "tuvacomputers.pythonanywhere.com,localhost,127.0.0.1").split(",") if host.strip()]
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -65,11 +65,12 @@ if "postgresql" in database_engine:
         "PORT": env("DB_PORT", "5432"),
     })
 STATIC_URL = "/static/"
+STATIC_ROOT = Path(env("STATIC_ROOT", "") or BASE_DIR / "staticfiles")
 MEDIA_URL = env("MEDIA_URL", "/media/")
 MEDIA_ROOT = Path(env("MEDIA_ROOT", "") or BASE_DIR / "media")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in env("CORS_ALLOWED_ORIGINS", env("FRONTEND_URL", "http://localhost:5173")).split(",")
+    origin.strip() for origin in env("CORS_ALLOWED_ORIGINS", env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173")).split(",")
     if origin.strip()
 ]
 REST_FRAMEWORK = {
@@ -109,7 +110,7 @@ EMAIL_USE_TLS = env("EMAIL_USE_TLS", "1") == "1"
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = f"TUVA <{EMAIL_HOST_USER or 'no-reply@tuva.local'}>"
-FRONTEND_URL = env("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173")
 
 if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True

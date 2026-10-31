@@ -518,9 +518,26 @@ export default function App() {
   const liveChatPanel = useRef(null);
   const liveChatTrigger = useRef(null);
   const cartAnnouncementTimer = useRef(null);
+  const logoLongPressTimer = useRef(null);
+  const logoLongPressTriggered = useRef(false);
   const skipProductEffect = useRef(false);
   const searchRequestId = useRef(0);
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
+
+  useEffect(() => {
+    const openAdminShortcut = (event) => {
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "a" && !event.repeat) {
+        const target = event.target;
+        if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+        event.preventDefault();
+        setAdminOpen(true);
+      }
+    };
+    window.addEventListener("keydown", openAdminShortcut);
+    return () => window.removeEventListener("keydown", openAdminShortcut);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(logoLongPressTimer.current), []);
 
   useEffect(() => {
     if (!chatOpen) return undefined;
@@ -638,7 +655,20 @@ export default function App() {
         <span className="utility-action"><Icon name="languages" size={14} />Prices in KSh</span></div>
         <button className="utility-action" onClick={() => setChatOpen(true)}><Icon name="circleHelp" size={14} />Contact support</button></div>
       <header className="site-header">
-        <a className="brand" href="/" aria-label="TUVA home"><img src="/logo.png" alt="TUVA" /></a>
+        <a className="brand" href="/" aria-label="TUVA home" onPointerDown={(event) => {
+          if (event.pointerType !== "touch") return;
+          logoLongPressTriggered.current = false;
+          window.clearTimeout(logoLongPressTimer.current);
+          logoLongPressTimer.current = window.setTimeout(() => {
+            logoLongPressTriggered.current = true;
+            setAdminOpen(true);
+          }, 700);
+        }} onPointerUp={() => window.clearTimeout(logoLongPressTimer.current)} onPointerCancel={() => window.clearTimeout(logoLongPressTimer.current)} onPointerLeave={() => window.clearTimeout(logoLongPressTimer.current)} onClick={(event) => {
+          if (logoLongPressTriggered.current) {
+            event.preventDefault();
+            logoLongPressTriggered.current = false;
+          }
+        }}><img src="/logo.png" alt="TUVA" /></a>
         <button className="mobile-ai-button" aria-label="Open AI shopping assistant" onClick={() => setAiOpen(true)}><Icon name="sparkle" size={18} /></button>
         {installPrompt && <button className="mobile-install-button" aria-label="Install TUVA app" onClick={doInstall}><Icon name="download" size={18} /></button>}
         <div className="mobile-location" aria-label="Delivery destination: Kenya"><Icon name="location" size={19} /><span><small>Deliver to</small><strong>Kenya</strong></span></div>
@@ -709,7 +739,6 @@ export default function App() {
         <button onClick={() => { setCartAnnouncement(""); openCart(); }}>View cart</button></div>}
 
       <footer className="site-footer"><span>© {new Date().getFullYear()} TUVA. Prices in Kenyan shillings.</span>
-        <button onClick={() => setAdminOpen(true)}>Store management</button>
       </footer>
 
       <div className="floating-actions">

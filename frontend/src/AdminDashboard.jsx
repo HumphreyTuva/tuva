@@ -88,8 +88,7 @@ function ProductEditor({ product, saving, onSave, onCancel }) {
     name: product?.name || "",
     subtitle: product?.subtitle || "",
     category: product?.category || "",
-    price_min: product?.price_min || "",
-    rating: product?.rating ?? "4.5",
+    price: product?.price || product?.price_min || "",
     stock: product?.stock ?? 0,
     badge: product?.badge || "",
     specs: (product?.specs || []).join("\n"),
@@ -104,8 +103,7 @@ function ProductEditor({ product, saving, onSave, onCancel }) {
       <label>Product name<input required maxLength={120} value={values.name} onChange={(event) => update("name", event.target.value)} /></label>
       <label>Subtitle<input maxLength={120} value={values.subtitle} onChange={(event) => update("subtitle", event.target.value)} /></label>
       <label>Category<input required maxLength={40} value={values.category} onChange={(event) => update("category", event.target.value)} /></label>
-      <label>Price (KSh)<input required type="number" min="0" step="1" value={values.price_min} onChange={(event) => update("price_min", event.target.value)} /></label>
-      <label>Rating<input required type="number" min="0" max="5" step="0.1" value={values.rating} onChange={(event) => update("rating", event.target.value)} /></label>
+      <label>Price (KSh)<input required type="number" min="0" step="1" value={values.price} onChange={(event) => update("price", event.target.value)} /></label>
       <label>Stock<input required type="number" min="0" max="1000000" step="1" value={values.stock} onChange={(event) => update("stock", event.target.value)} /></label>
       <label>Badge<input maxLength={30} value={values.badge} onChange={(event) => update("badge", event.target.value)} /></label>
       <label className="admin-product-specs">Specifications <small>Enter one per line</small><textarea rows="3" value={values.specs} onChange={(event) => update("specs", event.target.value)} /></label>
@@ -233,10 +231,9 @@ export default function AdminDashboard({ onClose }) {
     setProductSaving(true);
     setError("");
     const form = new FormData();
-    ["name", "subtitle", "category", "price_min", "rating", "stock", "badge"].forEach((field) => {
+    ["name", "subtitle", "category", "price", "stock", "badge"].forEach((field) => {
       form.append(field, values[field]);
     });
-    form.append("price_max", values.price_min);
     form.append("specs", JSON.stringify(values.specs.split("\n").map((spec) => spec.trim()).filter(Boolean)));
     if (values.image) form.append("image", values.image);
     try {
@@ -365,7 +362,7 @@ export default function AdminDashboard({ onClose }) {
             {activeSection === "Orders" && <section className="admin-panel admin-full-panel"><div className="admin-panel-heading"><div><h2>Customer orders</h2><p>Latest M-PESA checkouts and payment status.</p></div><span className="admin-count-pill">{dashboard.orders.length} recent</span></div>
               <AdminTable empty="No orders yet. New checkouts will appear here.">{dashboard.orders.length > 0 && <>
                 <thead><tr><th>ORDER</th><th>CUSTOMER</th><th>PRODUCT</th><th>QTY</th><th>AMOUNT (KSh)</th><th>PAYMENT</th><th>STATUS</th></tr></thead><tbody>
-                  {dashboard.orders.map((order) => <tr key={order.id}><td>#{order.id}<small>{date(order.created)}</small></td><td>{order.customer}</td><td>{order.product}</td><td>{order.quantity}</td><td>{money(order.amount)}</td><td>{order.payment_amount ? `KES ${Number(order.payment_amount).toLocaleString()}` : "—"}</td><td><span className={`admin-status ${order.status}`}>{order.status}</span></td></tr>)}
+                  {dashboard.orders.map((order) => <tr key={order.id}><td>{order.reference || `#${order.id}`}<small>{date(order.created)}</small></td><td>{order.customer}</td><td>{order.product}</td><td>{order.quantity}</td><td>{money(order.amount)}</td><td>{order.payment_amount ? `KES ${Number(order.payment_amount).toLocaleString()}` : "—"}</td><td><span className={`admin-status ${order.status}`}>{order.status}</span><small>Payment: {order.payment_status}</small></td></tr>)}
                 </tbody>
               </>}</AdminTable>
             </section>}

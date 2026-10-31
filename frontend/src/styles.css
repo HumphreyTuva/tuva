@@ -102,7 +102,7 @@ a { color: inherit; }
 .quick-benefits > div { display: flex; align-items: center; justify-content: center; gap: 9px; border-right: 1px solid #f0eeec; }
 .quick-benefits > div:last-child { border: 0; }
 .quick-benefits > div > .svg-icon, .bottom-assurances > div > .svg-icon { flex: 0 0 auto; color: #55534f; }
-.products-section { padding: 17px 0 24px; }
+.products-section { scroll-margin-top: 82px; padding: 17px 0 24px; }
 .section-heading { display: flex; min-height: 40px; align-items: end; justify-content: space-between; margin-bottom: 10px; }
 .section-heading .eyebrow { font-size: 9px; }
 .section-heading h2 { margin: 2px 0 0; font-family: Manrope, sans-serif; font-size: 20px; font-weight: 800; letter-spacing: -.035em; }

@@ -1,5 +1,7 @@
 from django.contrib import admin
-from .models import ChatMessage, Order, Product, StockAlert
+from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, OrderItem, Product, StockAlert, StockMovement
+
+admin.site.register([DeliveryZone, DiscountCode, MpesaPayment, OrderItem, StockMovement])
 
 
 @admin.register(ChatMessage)
@@ -13,13 +15,13 @@ class ChatMessageAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ("name", "category", "display_price", "stock", "rating", "badge")
+    list_display = ("name", "category", "display_price", "stock", "badge")
     list_filter = ("category", "badge")
     search_fields = ("name", "subtitle", "category")
 
     @admin.display(description="Price (Ksh)")
     def display_price(self, obj):
-        return f"Ksh {obj.price_min:,.0f}"
+        return f"Ksh {obj.price:,.0f}"
 
 
 @admin.register(Order)

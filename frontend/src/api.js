@@ -1,4 +1,4 @@
-const API = (import.meta.env.VITE_API || "http://localhost:8080/api").replace(/\/$/, "");
+const API = (import.meta.env.VITE_API || "http://127.0.0.1:8080/api").replace(/\/$/, "");
 const tok = () => window.localStorage.getItem("tuva_token");
 async function req(path, opts = {}, authToken = tok()) {
   const headers = {
@@ -23,15 +23,19 @@ async function req(path, opts = {}, authToken = tok()) {
 }
 export const api = {
   products: (q = "", category = "") => req(`/products/?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}`),
+  storeConfig: () => req("/store-config/", {}, ""),
+  deliveryZones: () => req("/delivery-zones/", {}, ""),
   imageSearch: (file) => { const f = new FormData(); f.append("image", file); return req("/image-search/", { method: "POST", body: f }); },
   alert: (email, query) => req("/alerts/", { method: "POST", body: JSON.stringify({ email, query }) }),
   google: (credential) => req("/auth/google/", { method: "POST", body: JSON.stringify({ credential }) }),
   register: (name, email, password) => req("/auth/register/", { method: "POST", body: JSON.stringify({ name, email, password }) }, ""),
   login: (email, password) => req("/auth/login/", { method: "POST", body: JSON.stringify({ email, password }) }, ""),
   logout: (token) => req("/auth/logout/", { method: "POST" }, token),
-  quote: (product, qty = 1) => req(`/checkout/quote/?product=${encodeURIComponent(product)}&qty=${encodeURIComponent(qty)}`),
-  checkout: (product, phone, qty = 1) => req("/checkout/", { method: "POST", body: JSON.stringify({ product, phone, qty }) }),
-  order: (id) => req(`/orders/${id}/`),
+  quote: (product, qty = 1, deliveryZone = "", discountCode = "") => req(`/checkout/quote/?product=${encodeURIComponent(product)}&qty=${encodeURIComponent(qty)}&delivery_zone=${encodeURIComponent(deliveryZone)}&discount_code=${encodeURIComponent(discountCode)}`),
+  quoteCart: (items, deliveryZone = null, discountCode = "") => req("/checkout/quote/", { method: "POST", body: JSON.stringify({ items, delivery_zone: deliveryZone, discount_code: discountCode }) }, ""),
+  checkout: (product, phone, qty = 1, idempotencyKey, customer = {}) => req("/checkout/", { method: "POST", headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}, body: JSON.stringify({ product, phone, qty, ...customer }) }),
+  checkoutCart: (items, phone, deliveryZone, discountCode, idempotencyKey) => req("/checkout/", { method: "POST", headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}, body: JSON.stringify({ items, phone, delivery_zone: deliveryZone, discount_code: discountCode }) }),
+  order: (id, accessToken = "") => req(`/orders/${id}/`, { headers: accessToken ? { "X-Order-Access-Token": accessToken } : {} }),
   assistant: (messages) => req("/assistant/", { method: "POST", body: JSON.stringify({ messages }) }),
   chat: (conversation) => req(`/chat/?conversation=${encodeURIComponent(conversation)}`),
   sendChat: (conversation, message) => req("/chat/", { method: "POST", body: JSON.stringify({ conversation, message }) }),

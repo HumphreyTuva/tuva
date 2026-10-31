@@ -112,6 +112,13 @@ EMAIL_HOST_USER = env("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", f"TUVA <{EMAIL_HOST_USER or 'no-reply@tuva.local'}>")
 FRONTEND_URL = env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173").split(",", 1)[0].strip().rstrip("/")
+MPESA_CALLBACK_SECRET = env("MPESA_CALLBACK_SECRET", "")
+ALLOW_GUEST_CHECKOUT = env("ALLOW_GUEST_CHECKOUT", "0").strip().lower() in {"1", "true", "yes", "on"}
+MPESA_SIMULATE = env("MPESA_SIMULATE", "0").strip().lower() in {"1", "true", "yes", "on"}
+MPESA_TRANSACTION_TYPE = env("MPESA_TRANSACTION_TYPE", "CustomerBuyGoodsOnline")
+MPESA_PARTY_B = env("MPESA_PARTY_B", env("MPESA_TILL", env("MPESA_TILL_NUMBER", "")))
+if MPESA_SIMULATE and not DEBUG:
+    raise ValueError("MPESA_SIMULATE can only be enabled while DEBUG is on.")
 
 if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True

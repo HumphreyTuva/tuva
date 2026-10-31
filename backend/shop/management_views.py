@@ -1,7 +1,7 @@
 from django.contrib.auth import authenticate
 from django.core.cache import cache
-from django.db.models.deletion import ProtectedError
-from django.db.models import Sum
+from django.db import transaction
+from django.db.models import F, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAdminUser
@@ -42,7 +42,7 @@ def admin_login(request):
 @permission_classes([IsAdminUser])
 def admin_dashboard(request):
     products = Product.objects.order_by("name", "id")[:100]
-    orders = Order.objects.select_related("product", "user").order_by("-created", "-id")[:10]
+    orders = Order.objects.select_related("product", "user").prefetch_related("items__product").order_by("-created", "-id")[:10]
     alerts = StockAlert.objects.filter(notified=False).order_by("-created", "-id")[:10]
 
     conversations = {}
@@ -60,14 +60,14 @@ def admin_dashboard(request):
         conversations[key]["message_count"] += 1
     conversation_list = list(conversations.values())[:12]
 
-    paid_revenue = Order.objects.filter(status="paid").aggregate(total=Sum("amount"))["total"] or 0
+    paid_revenue = Order.objects.filter(payment_status="successful").aggregate(total=Sum("total"))["total"] or 0
     return Response({
         "metrics": {
             "products": Product.objects.count(),
-            "in_stock": Product.objects.filter(stock__gt=0).count(),
+            "in_stock": Product.objects.filter(stock__gt=F("reserved")).count(),
             "low_stock": Product.objects.filter(stock__gt=0, stock__lte=5).count(),
             "orders": Order.objects.count(),
-            "pending_orders": Order.objects.filter(status="pending").count(),
+            "pending_orders": Order.objects.filter(payment_status="pending").count(),
             "paid_revenue": paid_revenue,
             "open_alerts": StockAlert.objects.filter(notified=False).count(),
         },
@@ -75,12 +75,14 @@ def admin_dashboard(request):
         "orders": [
             {
                 "id": order.pk,
-                "product": order.product.name,
-                "customer": order.user.email or order.user.username,
-                "quantity": order.qty,
-                "amount": order.amount,
+                "product": ", ".join(f"{item.product.name} × {item.quantity}" for item in order.items.all()) or (order.product.name if order.product_id else "—"),
+                "customer": order.email or ((order.user.email or order.user.username) if order.user else "Guest"),
+                "quantity": sum(item.quantity for item in order.items.all()) or order.qty,
+                "amount": order.total or order.amount,
                 "payment_amount": order.payment_amount,
                 "status": order.status,
+                "payment_status": order.payment_status,
+                "reference": order.reference,
                 "created": order.created,
             }
             for order in orders
@@ -105,11 +107,17 @@ def admin_update_stock(request, pk):
     if isinstance(stock, bool) or not isinstance(stock, int) or not 0 <= stock <= 1_000_000:
         return Response({"error": "Stock must be a whole number between 0 and 1,000,000."}, status=400)
 
-    product = get_object_or_404(Product, pk=pk)
-    product.stock = stock
-    product.save(update_fields=["stock"])
+    with transaction.atomic():
+        product = get_object_or_404(Product.objects.select_for_update(), pk=pk)
+        old_stock = product.stock
+        if stock < product.reserved:
+            return Response({"error": f"{product.reserved} unit(s) are reserved for active orders."}, status=400)
+        if stock == old_stock:
+            return Response({"id": product.pk, "stock": product.stock})
+        product.stock = stock
+        product.save(update_fields=["stock"])
     cache.clear()
-    return Response({"id": product.pk, "stock": product.stock})
+    return Response({"id": product.pk, "stock": product.stock, "available_stock": product.available_stock})
 
 
 @api_view(["POST"])
@@ -137,13 +145,8 @@ def admin_update_product(request, pk):
 @permission_classes([IsAdminUser])
 def admin_delete_product(request, pk):
     product = get_object_or_404(Product, pk=pk)
-    try:
-        product.delete()
-    except ProtectedError:
-        return Response(
-            {"error": "This product cannot be deleted because it has existing orders."},
-            status=409,
-        )
+    product.is_active = False
+    product.save(update_fields=["is_active"])
     cache.clear()
     return Response(status=204)
 

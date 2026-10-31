@@ -35,7 +35,6 @@ import {
   ShoppingBag,
   ShoppingCart,
   Sparkles,
-  Star,
   Store,
   Tag,
   Tablet,
@@ -116,8 +115,6 @@ function ProductCard({ product, onAdd }) {
       <div className="product-info">
         <div className="product-title"><h3>{product.name}</h3><span className="supplier-check" title="Verified supplier"><Check size={10} strokeWidth={3} /></span></div>
         <p className="product-subtitle">{product.subtitle}</p>
-        <p className="rating"><span aria-label={`${product.rating} out of 5 stars`}>{Array.from({ length: 5 }, (_, index) =>
-          <Star key={index} size={12} strokeWidth={1.7} fill={index < Math.round(product.rating || 0) ? "currentColor" : "none"} />)}</span><small>{product.rating} / 5</small></p>
         <p className="price">{money(product.price_min_kes)}</p>
         <p className="verified"><BadgeCheck size={12} aria-hidden="true" /> Verified supplier</p>
       </div>
@@ -134,10 +131,11 @@ function ProductCard({ product, onAdd }) {
   );
 }
 
-function AvailabilityAlert({ query }) {
-  const [email, setEmail] = useState("");
+function AvailabilityAlert({ query, userEmail }) {
+  const [email, setEmail] = useState(userEmail || "");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => setEmail(userEmail || ""), [userEmail, query]);
   const submit = async (event) => {
     event.preventDefault();
     setBusy(true);
@@ -145,7 +143,7 @@ function AvailabilityAlert({ query }) {
     try {
       await api.alert(email, query);
       setMessage("You're on the list. We'll email you when a match is available.");
-      setEmail("");
+      setEmail(userEmail || "");
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -229,6 +227,7 @@ function SignIn({ onSignedIn, onClose }) {
       const result = mode === "register" ? await api.register(name, email, password) : await api.login(email, password);
       localStorage.setItem("tuva_token", result.token);
       localStorage.setItem("tuva_user", result.name || result.email);
+      localStorage.setItem("tuva_email", result.email || email);
       onSignedIn(result);
     } catch (requestError) {
       setError(requestError.message);
@@ -256,6 +255,7 @@ function SignIn({ onSignedIn, onClose }) {
           const user = await api.google(credential.credential);
           localStorage.setItem("tuva_token", user.token);
           localStorage.setItem("tuva_user", user.name || user.email);
+          localStorage.setItem("tuva_email", user.email || "");
           onSignedIn(user);
         } catch (error) {
           setError(error.message);
@@ -267,7 +267,8 @@ function SignIn({ onSignedIn, onClose }) {
   );
 }
 
-function Checkout({ product, quantity, user, onClose, onSignIn, onPaid, whatsappNumber }) {
+function Checkout({ product, quantity, user, userEmail, onClose, onSignIn, onPaid, whatsappNumber }) {
+  const checkoutKey = useRef(crypto.randomUUID());
   const [phone, setPhone] = useState(() => {
     const token = localStorage.getItem("tuva_token");
     return token ? localStorage.getItem(`tuva_mpesa_phone:${token}`) || "" : "";
@@ -279,7 +280,28 @@ function Checkout({ product, quantity, user, onClose, onSignIn, onPaid, whatsapp
   const [paymentComplete, setPaymentComplete] = useState(false);
   const [quote, setQuote] = useState(null);
   const [quoteError, setQuoteError] = useState("");
+  const [guestCheckoutEnabled, setGuestCheckoutEnabled] = useState(false);
+  const [guestName, setGuestName] = useState(() => localStorage.getItem("tuva_user") || "");
+  const [guestEmail, setGuestEmail] = useState(() => userEmail || localStorage.getItem("tuva_email") || "");
+  const [guestAccessToken, setGuestAccessToken] = useState("");
+  const [deliveryZones, setDeliveryZones] = useState([]);
+  const [deliveryZone, setDeliveryZone] = useState("");
+  const [discountCode, setDiscountCode] = useState("");
+  const [address, setAddress] = useState("");
+  const [city, setCity] = useState("");
   const phoneStorageKey = user ? `tuva_mpesa_phone:${localStorage.getItem("tuva_token") || user.toLowerCase()}` : "";
+  useEffect(() => {
+    let active = true;
+    api.storeConfig().then((config) => {
+      if (active) setGuestCheckoutEnabled(Boolean(config.guest_checkout));
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    api.deliveryZones().then((zones) => { if (active) setDeliveryZones(zones); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     if (!phoneStorageKey) return;
     const savedPhone = localStorage.getItem(phoneStorageKey);
@@ -287,13 +309,15 @@ function Checkout({ product, quantity, user, onClose, onSignIn, onPaid, whatsapp
   }, [phoneStorageKey]);
   useEffect(() => {
     let active = true;
-    api.quote(product.id, quantity).then((result) => {
+    setQuote(null);
+    setQuoteError("");
+    api.quote(product.id, quantity, deliveryZone, discountCode).then((result) => {
       if (active) setQuote(result);
     }).catch((error) => {
       if (active) setQuoteError(error.message);
     });
     return () => { active = false; };
-  }, [product.id, quantity]);
+  }, [product.id, quantity, deliveryZone, discountCode]);
   const pay = async (event) => {
     event.preventDefault();
     if (paymentComplete) return;
@@ -304,42 +328,56 @@ function Checkout({ product, quantity, user, onClose, onSignIn, onPaid, whatsapp
     setBusy(true);
     setMessageType("pending");
     let order = activeOrder;
+    let orderAccessToken = guestAccessToken;
     try {
       if (order) {
         setMessage("Checking the existing payment request. We will not send another prompt.");
       } else {
         setMessage("Sending a secure M-PESA prompt to your phone...");
-        const result = await api.checkout(product.id, phone, quantity);
+        const result = await api.checkout(product.id, phone, quantity, checkoutKey.current, {
+          full_name: user || guestName, email: user ? userEmail : guestEmail, address, city,
+          delivery_zone: deliveryZone || null, discount_code: discountCode,
+        });
         order = result.order;
+        orderAccessToken = result.access_token || "";
+        setGuestAccessToken(orderAccessToken);
         setActiveOrder(order);
         if (phoneStorageKey) localStorage.setItem(phoneStorageKey, phone.trim());
         setMessage(result.message || "Check your phone and enter your M-PESA PIN.");
       }
       for (let attempt = 0; attempt < 30; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 4000));
-        const status = await api.order(order);
-        if (status.status === "paid") {
+        const status = await api.order(order, orderAccessToken);
+        if (status.payment_status === "successful") {
           setMessageType("success");
           setMessage(status.receipt ? `Payment confirmed. M-PESA receipt ${status.receipt}.` : "Payment confirmed.");
           setPaymentComplete(true);
           onPaid(product.id);
           return;
         }
-        if (status.status === "cancelled") {
+        if (status.payment_status === "cancelled") {
           setActiveOrder(null);
+          checkoutKey.current = crypto.randomUUID();
           setMessageType("cancelled");
           setMessage(status.feedback || "Payment cancelled. No payment was completed.");
           return;
         }
-        if (status.status === "failed") {
+        if (status.payment_status === "failed") {
           setActiveOrder(null);
+          checkoutKey.current = crypto.randomUUID();
           setMessageType("error");
           setMessage(status.feedback || "Payment failed. Please check your M-PESA phone and try again.");
+          return;
+        }
+        if (status.payment_status === "reconcile") {
+          setMessageType("pending");
+          setMessage(status.feedback || "Your payment needs review. Please contact TUVA support.");
           return;
         }
       }
       setMessage("Your payment is still processing. We’ll confirm it as soon as Safaricom responds.");
     } catch (error) {
+      if (error.status && error.status < 500) checkoutKey.current = crypto.randomUUID();
       setMessageType("error");
       setMessage(error.message);
     } finally {
@@ -351,13 +389,33 @@ function Checkout({ product, quantity, user, onClose, onSignIn, onPaid, whatsapp
       <div className="checkout-product"><img src={product.image} alt="" /><div><strong>{product.name}</strong><span>Qty {quantity}</span></div>
         <b>{money(product.price_min_kes)}</b></div>
       <div className="kes-quote"><span>M-PESA total</span><strong>{quote ? money(quote.amount_kes) : quoteError ? "Unavailable" : "Calculating…"}</strong></div>
+      {quote && <p className="security-note">Subtotal {money(quote.subtotal)}{Number(quote.delivery_fee) > 0 ? ` · delivery ${money(quote.delivery_fee)}` : ""}{Number(quote.discount) > 0 ? ` · discount −${money(quote.discount)}` : ""}</p>}
       {quoteError && <p className="form-message quote-error" role="alert">{quoteError}</p>}
       {paymentComplete ? <section className="payment-confirmation" aria-live="polite">
         <div><CircleCheck size={30} aria-hidden="true" /><span><strong>Payment confirmed</strong><small>Your order is complete. You do not need to pay again.</small></span></div>
         <button className="btn" onClick={onClose}>Done</button>
       </section> : <>
-        {!user ? <div className="checkout-signin"><p>Sign in or create a TUVA account before paying by M-PESA.</p><button className="btn" onClick={onSignIn}>Sign in or create account</button></div> :
+        {!user && !guestCheckoutEnabled ? <div className="checkout-signin"><p>Sign in or create a TUVA account before paying by M-PESA.</p><button className="btn" onClick={onSignIn}>Sign in or create account</button></div> :
           <form className="checkout-form" onSubmit={pay}>
+            {!user && <>
+              <label htmlFor="guest-name">Your name</label>
+              <input id="guest-name" type="text" autoComplete="name" required maxLength="150" value={guestName} onChange={(event) => setGuestName(event.target.value)} />
+              <label htmlFor="guest-email">Email for order updates</label>
+              <input id="guest-email" type="email" autoComplete="email" required maxLength="254" value={guestEmail} onChange={(event) => setGuestEmail(event.target.value)} />
+            </>}
+            {deliveryZones.length > 0 && <>
+              <label htmlFor="delivery-zone">Delivery area</label>
+              <select id="delivery-zone" value={deliveryZone} onChange={(event) => setDeliveryZone(event.target.value)}>
+                <option value="">Choose later / arrange with TUVA</option>
+                {deliveryZones.map((zone) => <option key={zone.id} value={zone.id}>{zone.name} · {zone.is_collection ? "collection" : money(zone.fee)}{zone.eta ? ` · ${zone.eta}` : ""}</option>)}
+              </select>
+              <label htmlFor="delivery-address">Delivery address (optional)</label>
+              <input id="delivery-address" autoComplete="street-address" value={address} onChange={(event) => setAddress(event.target.value)} />
+              <label htmlFor="delivery-city">Town / city</label>
+              <input id="delivery-city" autoComplete="address-level2" value={city} onChange={(event) => setCity(event.target.value)} />
+            </>}
+            <label htmlFor="discount-code">Discount code (optional)</label>
+            <input id="discount-code" value={discountCode} onChange={(event) => setDiscountCode(event.target.value)} maxLength="40" autoCapitalize="characters" />
             <label htmlFor="mpesa-phone">M-PESA phone number</label>
             <input id="mpesa-phone" type="tel" inputMode="tel" autoComplete="tel" required minLength="9" placeholder="e.g. 0712 345 678" value={phone} onChange={(event) => setPhone(event.target.value)} />
             <button className="btn pay-button" disabled={busy || !quote}>{busy ? "Waiting for payment..." : activeOrder ? "Check payment status" : "Pay with M-PESA"}</button>
@@ -510,6 +568,7 @@ export default function App() {
   const [signInOpen, setSignInOpen] = useState(false);
   const [signInError, setSignInError] = useState("");
   const [user, setUser] = useState(() => localStorage.getItem("tuva_user") || "");
+  const [userEmail, setUserEmail] = useState(() => localStorage.getItem("tuva_email") || "");
   const [installPrompt, setInstallPrompt] = useState(null);
   const [imageSearchBusy, setImageSearchBusy] = useState(false);
   const [imageSearchActive, setImageSearchActive] = useState(false);
@@ -522,6 +581,7 @@ export default function App() {
   const logoLongPressTriggered = useRef(false);
   const skipProductEffect = useRef(false);
   const searchRequestId = useRef(0);
+  const resultsSection = useRef(null);
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
 
   useEffect(() => {
@@ -566,6 +626,19 @@ export default function App() {
       if (requestId === searchRequestId.current) setLoading(false);
     }
   }, [category, query]);
+  const searchAndScrollToResults = async () => {
+    await loadProducts();
+    window.requestAnimationFrame(() => {
+      const section = resultsSection.current;
+      if (!section) return;
+      const header = document.querySelector(".site-header");
+      const stickyOffset = header && getComputedStyle(header).position === "sticky"
+        ? header.getBoundingClientRect().height + 12
+        : 12;
+      const top = section.getBoundingClientRect().top + window.scrollY - stickyOffset;
+      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    });
+  };
   useEffect(() => {
     if (skipProductEffect.current) {
       skipProductEffect.current = false;
@@ -627,6 +700,7 @@ export default function App() {
   const handleSignIn = (result) => {
     if (result.error) { setSignInError(result.error); return; }
     setUser(result.name || result.email || "");
+    setUserEmail(result.email || "");
     setSignInOpen(false);
     setSignInError("");
   };
@@ -634,7 +708,9 @@ export default function App() {
     const token = localStorage.getItem("tuva_token");
     localStorage.removeItem("tuva_token");
     localStorage.removeItem("tuva_user");
+    localStorage.removeItem("tuva_email");
     setUser("");
+    setUserEmail("");
     setCheckout(null);
     setSignInError("");
     if (!token) return;
@@ -673,10 +749,10 @@ export default function App() {
         {installPrompt && <button className="mobile-install-button" aria-label="Install TUVA app" onClick={doInstall}><Icon name="download" size={18} /></button>}
         <div className="mobile-location" aria-label="Delivery destination: Kenya"><Icon name="location" size={19} /><span><small>Deliver to</small><strong>Kenya</strong></span></div>
         <div className="search-wrap"><span className="search-category">All laptops</span>
-          <input aria-label="Search laptops" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && loadProducts()} placeholder="Search laptops, models, or features" />
+          <input aria-label="Search laptops" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && searchAndScrollToResults()} placeholder="Search laptops, models, or features" />
           <button className="image-search" title="Search by image" aria-label="Search by image" onClick={() => imageInput.current?.click()}>{imageSearchBusy ? <Icon name="loading" size={18} /> : <Icon name="camera" size={19} />}</button>
           <input ref={imageInput} hidden type="file" accept="image/*" onChange={(event) => runImageSearch(event.target.files?.[0])} />
-          <button className="btn search-button" onClick={() => loadProducts()}><Icon className="search-button-icon" name="search" size={17} /><span>Search</span></button>
+          <button className="btn search-button" onClick={searchAndScrollToResults}><Icon className="search-button-icon" name="search" size={17} /><span>Search</span></button>
         </div>
         <div className="header-actions">
           <button className="text-action" onClick={() => setAiOpen(true)}><Icon name="sparkle" size={17} /><span>AI assistant</span></button>
@@ -722,14 +798,14 @@ export default function App() {
         </section>
 
 
-        <section className="products-section" id="deals">
+        <section className="products-section" id="deals" ref={resultsSection}>
           <div className="section-heading"><div><span className="eyebrow">{imageSearchActive ? "IMAGE SEARCH" : query || category ? "YOUR SEARCH" : "CURATED FOR YOU"}</span><h2>{imageSearchActive ? "Visually similar laptops" : query ? `Results for “${query}”` : category ? `${categories.find((item) => item.id === category)?.name || "Laptop"} laptops` : "Top laptop deals"}</h2></div>
             <button className="view-all" onClick={() => { setQuery(""); setCategory(""); }}>View all deals <Icon name="chevronRight" size={16} /></button></div>
           {error && <div className="error-banner" role="alert">{error}<button onClick={() => loadProducts()}>Try again</button></div>}
           {loading ? <div className="product-grid" role="status" aria-label="Loading products" aria-busy="true">{[1, 2, 3, 4].map((item) => <div key={item} className="product-card skeleton" />)}</div> :
             products.length ? <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} />)}</div> :
               !error && <div className="empty-results"><Search className="empty-search-icon" aria-hidden="true" size={30} strokeWidth={1.6} /><h3>No matching laptops just yet</h3><p>Try a different search or get notified when something becomes available.</p></div>}
-          {!loading && !error && query && (!products.length || products.every((product) => !product.in_stock)) && <AvailabilityAlert query={query} />}
+          {!loading && !error && query && (!products.length || products.every((product) => !product.in_stock)) && <AvailabilityAlert query={query} userEmail={userEmail} />}
           {!loading && !error && !products.length && !query && <button className="btn retry-button" onClick={() => loadProducts()}>Reload laptops</button>}
         </section>
 
@@ -760,7 +836,7 @@ export default function App() {
             if (key === "home") window.scrollTo({ top: 0, behavior: "smooth" });
           }}><span><Icon name={icon} size={21} /></span>{label}{key === "cart" && cartCount > 0 && <b>{cartCount}</b>}</button>)}
       </nav>
-      {checkout && <Checkout product={checkout.product} quantity={checkout.quantity} user={user} whatsappNumber={whatsappNumber} onClose={() => setCheckout(null)}
+      {checkout && <Checkout product={checkout.product} quantity={checkout.quantity} user={user} userEmail={userEmail} whatsappNumber={whatsappNumber} onClose={() => setCheckout(null)}
         onSignIn={() => setSignInOpen(true)} onPaid={(id) => setCart((items) => items.filter((item) => item.product.id !== id))} />}
       {aiOpen && <Assistant onClose={() => setAiOpen(false)} />}
       {signInOpen && <SignIn onClose={() => setSignInOpen(false)} onSignedIn={handleSignIn} />}

@@ -17,14 +17,15 @@ def _setting(name, *aliases):
 
 def _callback_url():
     callback_url = _setting("MPESA_CALLBACK_URL", "MPESA_CALLBACK_BASE_URL").rstrip("/")
-    if callback_url.endswith("/api/mpesa/callback"):
-        return callback_url + "/"
-    return callback_url + "/api/mpesa/callback/"
+    if not callback_url.endswith("/api/mpesa/callback"):
+        callback_url += "/api/mpesa/callback"
+    callback_secret = env.get("MPESA_CALLBACK_SECRET", "").strip()
+    return f"{callback_url}/{callback_secret}/" if callback_secret else f"{callback_url}/"
 
 
-def kes_amount(usd_amount):
+def round_kes_amount(amount_kes):
     try:
-        amount = Decimal(usd_amount)
+        amount = Decimal(amount_kes)
         if not amount.is_finite() or amount <= 0:
             raise InvalidOperation
     except (KeyError, InvalidOperation, ValueError):
@@ -81,10 +82,10 @@ def stk_push(phone, amount, reference):
         "BusinessShortCode": _setting("MPESA_SHORTCODE"),
         "Password": password,
         "Timestamp": timestamp,
-        "TransactionType": "CustomerBuyGoodsOnline",
+        "TransactionType": env.get("MPESA_TRANSACTION_TYPE", "CustomerBuyGoodsOnline"),
         "Amount": int(amount),
         "PartyA": normalized_phone,
-        "PartyB": _setting("MPESA_TILL", "MPESA_TILL_NUMBER"),
+        "PartyB": _setting("MPESA_PARTY_B", "MPESA_TILL", "MPESA_TILL_NUMBER"),
         "PhoneNumber": normalized_phone,
         "CallBackURL": _callback_url(),
         "AccountReference": reference,

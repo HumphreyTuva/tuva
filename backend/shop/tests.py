@@ -1,25 +1,30 @@
-from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from io import StringIO
 import os
 import tempfile
+from io import BytesIO
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
+from django.utils import timezone as django_timezone
 from PIL import Image
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from .imagesearch import embed
-from .models import ChatMessage, Order, Product, StockAlert
+from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, Product, StockAlert, StockMovement
 from . import mpesa
 from .mpesa import normalize
 from .tasks import branded
 
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class StorefrontApiTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -27,8 +32,8 @@ class StorefrontApiTests(APITestCase):
             name="ProBook 14",
             subtitle="14-inch business laptop",
             category="business",
-            price_min="679.00",
-            price_max="799.00",
+            price="679.00",
+            compare_price="799.00",
             specs=["16GB RAM", "512GB SSD"],
             stock=5,
         )
@@ -45,6 +50,17 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data[0]["price_min_kes"], 679)
         self.assertEqual(response.data[0]["price_max_kes"], 799)
+        self.assertNotIn("rating", response.data[0])
+
+    def test_product_stock_updates_are_reflected_without_waiting_for_cache(self):
+        first = self.client.get("/api/products/")
+        self.assertEqual(first.data[0]["stock"], 5)
+
+        self.product.stock = 0
+        self.product.save(update_fields=["stock"])
+
+        updated = self.client.get("/api/products/")
+        self.assertEqual(updated.data[0]["stock"], 0)
 
     def test_image_search_returns_visual_matches(self):
         image_bytes = BytesIO()
@@ -67,6 +83,42 @@ class StorefrontApiTests(APITestCase):
     def test_checkout_quote_checks_available_quantity_without_a_rate(self):
         unavailable = self.client.get("/api/checkout/quote/", {"product": self.product.pk, "qty": 6})
         self.assertEqual(unavailable.status_code, 400)
+
+    def test_server_cart_quote_recalculates_lines_delivery_and_discount(self):
+        second = Product.objects.create(name="ThinkPad X", category="business", price="300.00", stock=3)
+        zone = DeliveryZone.objects.create(name="Nairobi", fee="250.00")
+        DiscountCode.objects.create(code="TUVA10", kind="percent", value="10")
+        response = self.client.post("/api/checkout/quote/", {
+            "items": [{"product": self.product.pk, "quantity": 2}, {"product": second.pk, "quantity": 1}],
+            "delivery_zone": zone.pk,
+            "discount_code": "tuva10",
+            "total": "1",
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["subtotal"], Decimal("1658.00"))
+        self.assertEqual(response.data["delivery_fee"], Decimal("250.00"))
+        self.assertEqual(response.data["discount"], Decimal("165.80"))
+        self.assertEqual(response.data["total"], Decimal("1742.20"))
+        self.assertEqual(response.data["amount_kes"], 1742)
+
+    def test_multi_item_checkout_reserves_each_line_and_ignores_browser_total(self):
+        second = Product.objects.create(name="ThinkPad X", category="business", price="300.00", stock=3)
+        user = get_user_model().objects.create_user(username="multi-payer")
+        self.client.force_authenticate(user=user)
+        with patch("shop.views.mpesa.stk_push", return_value={"ResponseCode": "0", "CheckoutRequestID": "multi-checkout"}) as push:
+            response = self.client.post("/api/checkout/", {
+                "items": [{"product": self.product.pk, "quantity": 2}, {"product": second.pk, "quantity": 1}],
+                "phone": "0712345678", "total": "1",
+            }, format="json")
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get(pk=response.data["order"])
+        self.assertEqual(order.total, Decimal("1658.00"))
+        self.assertEqual(order.items.count(), 2)
+        self.product.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(self.product.reserved, 2)
+        self.assertEqual(second.reserved, 1)
+        push.assert_called_once_with("254712345678", 1658, f"TUVA{order.pk}")
 
     def test_live_chat_persists_customer_message_for_conversation(self):
         conversation = str(uuid4())
@@ -100,6 +152,42 @@ class StorefrontApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    @override_settings(ALLOW_GUEST_CHECKOUT=True)
+    def test_guest_checkout_returns_private_access_token(self):
+        with patch("shop.views.mpesa.stk_push", return_value={"ResponseCode": "0", "CheckoutRequestID": "guest-checkout"}):
+            response = self.client.post("/api/checkout/", {
+                "product": self.product.pk, "phone": "0712345678", "full_name": "Guest Buyer",
+                "email": "guest@example.com", "qty": 1,
+            }, format="json", HTTP_IDEMPOTENCY_KEY="guest-checkout-123")
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get(pk=response.data["order"])
+        self.assertIsNone(order.user)
+        self.assertEqual(order.email, "guest@example.com")
+        self.assertEqual(len(response.data["access_token"]), 48)
+        self.assertEqual(self.client.get(f"/api/orders/{order.pk}/").status_code, 404)
+        status = self.client.get(f"/api/orders/{order.pk}/", HTTP_X_ORDER_ACCESS_TOKEN=response.data["access_token"])
+        self.assertEqual(status.status_code, 200)
+
+    @override_settings(DEBUG=True, MPESA_SIMULATE=True)
+    def test_simulated_mpesa_completes_once_after_six_seconds(self):
+        user = get_user_model().objects.create_user(username="simulation-payer")
+        self.client.force_authenticate(user=user)
+        with patch("shop.views.mpesa.stk_push") as stk_push:
+            response = self.client.post("/api/checkout/", {"product": self.product.pk, "phone": "0712345678"}, format="json")
+            order = Order.objects.get(pk=response.data["order"])
+            order.created = django_timezone.now() - timedelta(seconds=7)
+            order.save(update_fields=["created"])
+            first_status = self.client.get(f"/api/orders/{order.pk}/")
+            self.product.refresh_from_db()
+            self.assertEqual(self.product.stock, 4)
+            second_status = self.client.get(f"/api/orders/{order.pk}/")
+        stk_push.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(first_status.data["payment_status"], "successful")
+        self.assertEqual(second_status.data["payment_status"], "successful")
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 4)
+
     def test_authenticated_checkout_sends_kes_amount_to_daraja(self):
         user = get_user_model().objects.create_user(username="payer")
         self.client.force_authenticate(user=user)
@@ -119,7 +207,56 @@ class StorefrontApiTests(APITestCase):
         order = Order.objects.get(pk=response.data["order"])
         self.assertEqual(order.amount, 1358)
         self.assertEqual(order.payment_amount, 1358)
-        self.assertEqual(order.status, "pending")
+        self.assertEqual(order.status, "pending_payment")
+        self.assertEqual(order.payment_status, "pending")
+        self.assertTrue(order.stock_reserved)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.reserved, 2)
+        self.assertEqual(order.items.count(), 1)
+
+    def test_checkout_idempotency_key_does_not_create_duplicate_orders(self):
+        user = get_user_model().objects.create_user(username="idempotent-payer")
+        self.client.force_authenticate(user=user)
+        headers = {"HTTP_IDEMPOTENCY_KEY": "checkout-request-123"}
+        with patch("shop.views.mpesa.stk_push", return_value={"ResponseCode": "0", "CheckoutRequestID": "idempotent-daraja"}) as stk_push:
+            first = self.client.post("/api/checkout/", {"product": self.product.pk, "phone": "0712345678", "qty": 1}, format="json", **headers)
+            second = self.client.post("/api/checkout/", {"product": self.product.pk, "phone": "0712345678", "qty": 1}, format="json", **headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["order"], second.data["order"])
+        self.assertEqual(Order.objects.filter(user=user).count(), 1)
+        stk_push.assert_called_once()
+
+    def test_expire_orders_queries_daraja_then_releases_cancelled_reservation(self):
+        user = get_user_model().objects.create_user(username="expiring-payer")
+        order = Order.objects.create(user=user, product=self.product, amount="679.00", payment_amount=679,
+                                     phone="254712345678", checkout_request_id="expiry-checkout", stock_reserved=True)
+        order.created = django_timezone.now() - timedelta(minutes=21)
+        order.save(update_fields=["created"])
+        self.product.reserved = 1
+        self.product.save(update_fields=["reserved"])
+        with patch("shop.management.commands.expire_orders.mpesa.query", return_value={"ResultCode": 1032, "ResultDesc": "Cancelled"}) as query:
+            call_command("expire_orders", stdout=StringIO())
+        query.assert_called_once_with("expiry-checkout")
+        order.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual(order.payment_status, "cancelled")
+        self.assertFalse(order.stock_reserved)
+        self.assertEqual(self.product.reserved, 0)
+
+    def test_order_status_rate_limits_daraja_query_in_shared_database(self):
+        user = get_user_model().objects.create_user(username="polling-payer")
+        order = Order.objects.create(user=user, product=self.product, amount="679.00", payment_amount=679,
+                                     phone="254712345678", checkout_request_id="polling-checkout")
+        order.created = django_timezone.now() - timedelta(seconds=30)
+        order.save(update_fields=["created"])
+        self.client.force_authenticate(user=user)
+        with patch("shop.views.mpesa.query", return_value={}) as query:
+            self.client.get(f"/api/orders/{order.pk}/")
+            self.client.get(f"/api/orders/{order.pk}/")
+        query.assert_called_once_with("polling-checkout")
+        order.refresh_from_db()
+        self.assertIsNotNone(order.last_status_query_at)
 
     def test_stock_alert_subscription_and_restock_notification(self):
         with patch("shop.views.send_html.delay") as send_email:
@@ -148,6 +285,7 @@ class StorefrontApiTests(APITestCase):
                 self.product.save(update_fields=["stock"])
         notify.assert_called_once_with(self.product.pk)
 
+    @override_settings(MPESA_CALLBACK_SECRET="test-secret")
     def test_successful_payment_callback_verifies_amount_and_is_idempotent(self):
         user = get_user_model().objects.create_user(username="customer", email="")
         order = Order.objects.create(
@@ -155,7 +293,7 @@ class StorefrontApiTests(APITestCase):
             product=self.product,
             qty=2,
             amount="1358.00",
-            payment_amount=177219,
+            payment_amount=1358,
             phone="254712345678",
             checkout_request_id="checkout-test",
         )
@@ -166,7 +304,7 @@ class StorefrontApiTests(APITestCase):
                     "ResultCode": 0,
                     "CallbackMetadata": {
                         "Item": [
-                            {"Name": "Amount", "Value": 177219},
+                            {"Name": "Amount", "Value": 1358},
                             {"Name": "MpesaReceiptNumber", "Value": "TUVA123"},
                         ],
                     },
@@ -174,29 +312,31 @@ class StorefrontApiTests(APITestCase):
             },
         }
 
-        first = self.client.post("/api/mpesa/callback/", payload, format="json")
-        second = self.client.post("/api/mpesa/callback/", payload, format="json")
+        first = self.client.post("/api/mpesa/callback/test-secret/", payload, format="json")
+        second = self.client.post("/api/mpesa/callback/test-secret/", payload, format="json")
 
         order.refresh_from_db()
         self.product.refresh_from_db()
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(order.status, "paid")
+        self.assertEqual(order.status, "processing")
+        self.assertEqual(order.payment_status, "successful")
         self.assertEqual(order.receipt, "TUVA123")
         self.assertEqual(self.product.stock, 3)
 
+    @override_settings(MPESA_CALLBACK_SECRET="test-secret")
     def test_mpesa_callback_rejects_mismatched_amount(self):
         user = get_user_model().objects.create_user(username="other", email="")
         order = Order.objects.create(
             user=user,
             product=self.product,
             amount="679.00",
-            payment_amount=88470,
+            payment_amount=679,
             phone="254712345678",
             checkout_request_id="mismatch-test",
         )
         self.client.post(
-            "/api/mpesa/callback/",
+            "/api/mpesa/callback/test-secret/",
             {
                 "Body": {
                     "stkCallback": {
@@ -210,8 +350,47 @@ class StorefrontApiTests(APITestCase):
         )
 
         order.refresh_from_db()
-        self.assertEqual(order.status, "failed")
+        self.assertEqual(order.status, "pending_payment")
+        self.assertEqual(order.payment_status, "reconcile")
         self.assertEqual(self.product.stock, 5)
+
+    @override_settings(MPESA_CALLBACK_SECRET="test-secret")
+    def test_late_payment_after_cancelled_order_goes_to_reconciliation(self):
+        user = get_user_model().objects.create_user(username="late-payer")
+        order = Order.objects.create(user=user, product=self.product, amount="679.00", payment_amount=679,
+                                     phone="254712345678", checkout_request_id="late-checkout",
+                                     status="cancelled", payment_status="cancelled")
+        response = self.client.post("/api/mpesa/callback/test-secret/", {
+            "Body": {"stkCallback": {"CheckoutRequestID": "late-checkout", "ResultCode": 0,
+                "CallbackMetadata": {"Item": [{"Name": "Amount", "Value": 679}, {"Name": "MpesaReceiptNumber", "Value": "LATE123"}]}}},
+        }, format="json")
+        order.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(order.payment_status, "reconcile")
+        self.assertEqual(self.product.stock, 5)
+
+    @override_settings(MPESA_CALLBACK_SECRET="test-secret")
+    def test_duplicate_mpesa_receipt_is_reconciled_without_second_stock_debit(self):
+        prior_user = get_user_model().objects.create_user(username="receipt-owner")
+        prior_order = Order.objects.create(user=prior_user, product=self.product, amount="679.00", payment_amount=679,
+                                           phone="254712345678", checkout_request_id="receipt-owner-checkout",
+                                           status="processing", payment_status="successful", stock_committed=True, receipt="SHARED1")
+        MpesaPayment.objects.create(order=prior_order, phone=prior_order.phone, amount=679,
+                                    checkout_request_id="receipt-owner-checkout", status="successful", receipt="SHARED1")
+        user = get_user_model().objects.create_user(username="receipt-duplicate")
+        order = Order.objects.create(user=user, product=self.product, amount="679.00", payment_amount=679,
+                                     phone="254712345678", checkout_request_id="receipt-duplicate-checkout")
+        self.client.post("/api/mpesa/callback/test-secret/", {
+            "Body": {"stkCallback": {"CheckoutRequestID": "receipt-duplicate-checkout", "ResultCode": 0,
+                "CallbackMetadata": {"Item": [{"Name": "Amount", "Value": 679}, {"Name": "MpesaReceiptNumber", "Value": "SHARED1"}]}}},
+        }, format="json")
+        order.refresh_from_db()
+        self.assertEqual(order.payment_status, "reconcile")
+        self.assertEqual(self.product.stock, 5)
+
+    def test_mpesa_callback_rejects_wrong_secret(self):
+        response = self.client.post("/api/mpesa/callback/wrong-secret/", {}, format="json")
+        self.assertEqual(response.status_code, 404)
 
     def test_phone_normalization_accepts_common_kenyan_formats(self):
         self.assertEqual(normalize("0712 345 678"), "254712345678")
@@ -243,6 +422,7 @@ class StorefrontApiTests(APITestCase):
             "MPESA_TILL": "654321",
             "MPESA_PASSKEY": "test-passkey",
             "MPESA_CALLBACK_URL": "https://example.test/api/mpesa/callback/",
+            "MPESA_CALLBACK_SECRET": "",
         }), patch("shop.mpesa._token", return_value="test-token"), patch(
             "shop.mpesa.requests.post"
         ) as post, patch("shop.mpesa.datetime") as mocked_datetime:
@@ -280,8 +460,8 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(kwargs["json"]["CheckoutRequestID"], "checkout-id")
 
     def test_mpesa_amount_uses_price_as_kes(self):
-        self.assertEqual(mpesa.kes_amount("679.50"), 680)
-        self.assertIsNone(mpesa.kes_amount("0"))
+        self.assertEqual(mpesa.round_kes_amount("679.50"), 680)
+        self.assertIsNone(mpesa.round_kes_amount("0"))
 
     def test_branded_email_escapes_user_content(self):
         html = branded("<script>alert(1)</script>", "Laptop <img src=x>", "Browse", "https://example.test/?q=a&b")
@@ -339,6 +519,9 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(dashboard.data["metrics"]["products"], 1)
         self.assertEqual(dashboard.data["metrics"]["in_stock"], 0)
         self.assertEqual(self.client.get("/api/products/").data[0]["stock"], 0)
+        movement = StockMovement.objects.filter(product=self.product).latest("created")
+        self.assertEqual(movement.quantity_delta, -5)
+        self.assertEqual(movement.reason, "adjustment")
 
     def test_staff_can_create_edit_and_delete_products(self):
         staff = get_user_model().objects.create_user(username="manager", is_staff=True)
@@ -355,9 +538,8 @@ class StorefrontApiTests(APITestCase):
                     "name": "New Laptop",
                     "subtitle": "A useful laptop",
                     "category": "business",
-                    "price_min": "500.00",
-                    "price_max": "650.00",
-                    "rating": "4.5",
+                    "price": "500.00",
+                    "compare_price": "650.00",
                     "specs": '["16GB RAM"]',
                     "stock": "12",
                     "badge": "New",
@@ -368,7 +550,7 @@ class StorefrontApiTests(APITestCase):
             product_id = created.data.get("id")
             edited = self.client.patch(
                 f"/api/management/products/{product_id}/",
-                {"name": "Updated Laptop", "price_min": "550.00", "specs": '["32GB RAM"]'},
+                {"name": "Updated Laptop", "price": "550.00", "specs": '["32GB RAM"]'},
                 format="multipart",
             )
             deleted = self.client.delete(f"/api/management/products/{product_id}/delete/")
@@ -378,7 +560,7 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(edited.data["name"], "Updated Laptop")
         self.assertEqual(edited.data["specs"], ["32GB RAM"])
         self.assertEqual(deleted.status_code, 204)
-        self.assertFalse(Product.objects.filter(pk=product_id).exists())
+        self.assertTrue(Product.objects.filter(pk=product_id, is_active=False).exists())
         self.assertEqual([item["id"] for item in self.client.get("/api/products/").data], [self.product.pk])
 
     def test_product_management_requires_staff_and_preserves_ordered_products(self):
@@ -393,8 +575,8 @@ class StorefrontApiTests(APITestCase):
         Order.objects.create(user=buyer, product=self.product, amount="679.00", phone="254712345678")
         response = self.client.delete(f"/api/management/products/{self.product.pk}/delete/")
 
-        self.assertEqual(response.status_code, 409)
-        self.assertTrue(Product.objects.filter(pk=self.product.pk).exists())
+        self.assertEqual(response.status_code, 204)
+        self.assertTrue(Product.objects.filter(pk=self.product.pk, is_active=False).exists())
 
     def test_authenticated_user_can_sign_out_and_revoke_token(self):
         user = get_user_model().objects.create_user(username="buyer")

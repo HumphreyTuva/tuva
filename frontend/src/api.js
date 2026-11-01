@@ -1,6 +1,6 @@
 const DEFAULT_API = import.meta.env.PROD
   ? "https://tuvacomputers.pythonanywhere.com/api"
-  : "http://127.0.0.1:8080/api";
+  : "https://tuvacomputers.pythonanywhere.com/api";
 const configuredAPI = import.meta.env.VITE_API;
 const pointsAtThisComputer = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredAPI || "");
 const API = ((import.meta.env.PROD && pointsAtThisComputer ? "" : configuredAPI) || DEFAULT_API).replace(/\/$/, "");

@@ -28,16 +28,26 @@ def _restock(sender, instance, created, **kwargs):
             reason="sale" if movement_order else "restock" if instance.stock > previous_stock else "adjustment",
             note=f"Order {movement_order.reference}" if movement_order else "Product stock updated",
         )
-    if instance.available_stock > 0 and (created or getattr(instance, "_was_out", False)):
-        from .models import StockAlert
+    if instance.available_stock > 0 and not created and getattr(instance, "_was_out", False):
+        from .models import AvailabilityRequest
+        from .tasks import notify_availability_request
 
-        pending = StockAlert.objects.filter(notified=False)
-        linked_alert = pending.filter(product=instance).exists()
-        matching_query = any(
-            alert.query.casefold() in instance.name.casefold() or instance.name.casefold() in alert.query.casefold()
-            for alert in pending.filter(product__isnull=True).only("query")
-        )
-        if linked_alert or matching_query:
-            from .tasks import notify_back_in_stock
-
-            transaction.on_commit(lambda: notify_back_in_stock.delay(instance.pk), robust=True)
+        searchable = " ".join([
+            instance.name, instance.subtitle, instance.brand, instance.model, instance.sku,
+            instance.category, " ".join(str(alias) for alias in (instance.aliases or [])),
+        ]).casefold()
+        requests = AvailabilityRequest.objects.filter(status="active", consent=True)
+        for alert in requests.iterator():
+            identifiers = {instance.sku.casefold(), instance.model.casefold()}
+            identifiers.discard("")
+            query = alert.query.strip().casefold()
+            exact = query in identifiers
+            tokens = [token for token in query.split() if len(token) > 1]
+            matches = exact or bool(tokens) and all(token in searchable for token in tokens)
+            if alert.brand and alert.brand.casefold() not in instance.brand.casefold():
+                matches = False
+            if matches:
+                transaction.on_commit(
+                    lambda request_id=alert.pk, product=instance: notify_availability_request(request_id, product),
+                    robust=True,
+                )

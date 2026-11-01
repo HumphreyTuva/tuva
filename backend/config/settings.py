@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -73,6 +74,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip() for origin in env("CORS_ALLOWED_ORIGINS", env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173")).split(",")
     if origin.strip()
 ]
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication"],
     "DEFAULT_THROTTLE_CLASSES": [
@@ -112,6 +114,9 @@ EMAIL_HOST_USER = env("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", f"TUVA <{EMAIL_HOST_USER or 'no-reply@tuva.local'}>")
 FRONTEND_URL = env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173").split(",", 1)[0].strip().rstrip("/")
+SITE_URL = env("SITE_URL", FRONTEND_URL)
+EMAIL_ASYNC = env("EMAIL_ASYNC", "1").strip().lower() in {"1", "true", "yes", "on"}
+EMAIL_USE_CELERY = env("EMAIL_USE_CELERY", "0").strip().lower() in {"1", "true", "yes", "on"} and bool(env("REDIS_URL", ""))
 MPESA_CALLBACK_SECRET = env("MPESA_CALLBACK_SECRET", "")
 ALLOW_GUEST_CHECKOUT = env("ALLOW_GUEST_CHECKOUT", "0").strip().lower() in {"1", "true", "yes", "on"}
 MPESA_SIMULATE = env("MPESA_SIMULATE", "0").strip().lower() in {"1", "true", "yes", "on"}

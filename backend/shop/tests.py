@@ -18,7 +18,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from .imagesearch import embed
-from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, Product, StockAlert, StockMovement
+from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, Product, ProductImage, StockAlert, StockMovement
 from . import mpesa
 from .mpesa import normalize
 from .tasks import branded
@@ -43,6 +43,56 @@ class StorefrontApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["name"] for item in response.data], ["ProBook 14"])
+
+    def test_products_support_offset_pagination(self):
+        second_product = Product.objects.create(
+            name="TravelMate 14",
+            subtitle="Business laptop",
+            category="business",
+            price="500.00",
+            stock=2,
+        )
+
+        first_page = self.client.get("/api/products/", {"offset": 0})
+        next_page = self.client.get("/api/products/", {"offset": 1})
+
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual([item["id"] for item in first_page.data], [self.product.pk, second_product.pk])
+        self.assertEqual([item["id"] for item in next_page.data], [second_product.pk])
+        self.assertEqual(self.client.get("/api/products/", {"offset": -1}).status_code, 400)
+        self.assertEqual(self.client.get("/api/products/", {"offset": "invalid"}).status_code, 400)
+
+    def test_product_count_reports_all_active_filtered_results(self):
+        second_product = Product.objects.create(
+            name="TravelMate 14",
+            subtitle="Business laptop",
+            category="business",
+            price="500.00",
+            stock=2,
+        )
+        Product.objects.create(
+            name="Gaming laptop",
+            subtitle="Gaming laptop",
+            category="gaming",
+            price="800.00",
+            stock=2,
+        )
+
+        response = self.client.get("/api/products/", {"category": "business", "include_count": "true"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual([item["id"] for item in response.data["results"]], [self.product.pk, second_product.pk])
+
+    def test_product_detail_returns_product_and_hides_archived_products(self):
+        response = self.client.get(f"/api/products/{self.product.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["name"], "ProBook 14")
+        self.assertEqual(response.data["specs"], ["16GB RAM", "512GB SSD"])
+
+        self.product.is_active = False
+        self.product.save(update_fields=["is_active"])
+        self.assertEqual(self.client.get(f"/api/products/{self.product.pk}/").status_code, 404)
 
     def test_product_prices_are_kes_values(self):
         response = self.client.get("/api/products/")
@@ -84,10 +134,9 @@ class StorefrontApiTests(APITestCase):
         unavailable = self.client.get("/api/checkout/quote/", {"product": self.product.pk, "qty": 6})
         self.assertEqual(unavailable.status_code, 400)
 
-    def test_server_cart_quote_recalculates_lines_delivery_and_discount(self):
+    def test_server_cart_quote_recalculates_lines_and_ignores_discount_codes(self):
         second = Product.objects.create(name="ThinkPad X", category="business", price="300.00", stock=3)
         zone = DeliveryZone.objects.create(name="Nairobi", fee="250.00")
-        DiscountCode.objects.create(code="TUVA10", kind="percent", value="10")
         response = self.client.post("/api/checkout/quote/", {
             "items": [{"product": self.product.pk, "quantity": 2}, {"product": second.pk, "quantity": 1}],
             "delivery_zone": zone.pk,
@@ -97,9 +146,9 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["subtotal"], Decimal("1658.00"))
         self.assertEqual(response.data["delivery_fee"], Decimal("250.00"))
-        self.assertEqual(response.data["discount"], Decimal("165.80"))
-        self.assertEqual(response.data["total"], Decimal("1742.20"))
-        self.assertEqual(response.data["amount_kes"], 1742)
+        self.assertNotIn("discount", response.data)
+        self.assertEqual(response.data["total"], Decimal("1908.00"))
+        self.assertEqual(response.data["amount_kes"], 1908)
 
     def test_multi_item_checkout_reserves_each_line_and_ignores_browser_total(self):
         second = Product.objects.create(name="ThinkPad X", category="business", price="300.00", stock=3)
@@ -262,28 +311,30 @@ class StorefrontApiTests(APITestCase):
         with patch("shop.views.send_html.delay") as send_email:
             response = self.client.post(
                 "/api/alerts/",
-                {"email": "buyer@example.com", "query": "ProBook 14"},
+                {"email": "buyer@example.com", "query": "ProBook 14", "consent": True},
                 format="json",
             )
             duplicate = self.client.post(
                 "/api/alerts/",
-                {"email": "buyer@example.com", "query": "ProBook 14"},
+                {"email": "buyer@example.com", "query": "ProBook 14", "consent": True},
                 format="json",
             )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(duplicate.status_code, 200)
         send_email.assert_called_once()
 
-        alert = StockAlert.objects.get()
-        alert.product = self.product
-        alert.save(update_fields=["product"])
-        with patch("shop.tasks.notify_back_in_stock.delay") as notify:
+        from .models import AvailabilityRequest
+        alert = AvailabilityRequest.objects.get()
+        alert.query = self.product.model or self.product.name
+        alert.matched_product = self.product
+        alert.save(update_fields=["query", "matched_product"])
+        with patch("shop.tasks.notify_availability_request") as notify:
             with self.captureOnCommitCallbacks(execute=True):
                 self.product.stock = 0
                 self.product.save(update_fields=["stock"])
                 self.product.stock = 1
                 self.product.save(update_fields=["stock"])
-        notify.assert_called_once_with(self.product.pk)
+        notify.assert_called_once()
 
     @override_settings(MPESA_CALLBACK_SECRET="test-secret")
     def test_successful_payment_callback_verifies_amount_and_is_idempotent(self):
@@ -467,7 +518,8 @@ class StorefrontApiTests(APITestCase):
         html = branded("<script>alert(1)</script>", "Laptop <img src=x>", "Browse", "https://example.test/?q=a&b")
 
         self.assertNotIn("<script>", html)
-        self.assertNotIn("<img", html)
+        self.assertIn('<img src="https://', html)
+        self.assertNotIn('<img src=x>', html)
         self.assertIn("&lt;script&gt;", html)
         self.assertIn("&amp;", html)
 
@@ -543,14 +595,24 @@ class StorefrontApiTests(APITestCase):
                     "specs": '["16GB RAM"]',
                     "stock": "12",
                     "badge": "New",
-                    "image": SimpleUploadedFile("new-laptop.png", image_bytes.getvalue(), content_type="image/png"),
+                    "image_files": [
+                        SimpleUploadedFile("new-laptop.png", image_bytes.getvalue(), content_type="image/png"),
+                        SimpleUploadedFile("new-laptop-side.png", image_bytes.getvalue(), content_type="image/png"),
+                    ],
                 },
                 format="multipart",
             )
             product_id = created.data.get("id")
             edited = self.client.patch(
                 f"/api/management/products/{product_id}/",
-                {"name": "Updated Laptop", "price": "550.00", "specs": '["32GB RAM"]'},
+                {
+                    "name": "Updated Laptop",
+                    "price": "550.00",
+                    "specs": '["32GB RAM"]',
+                    "image_files": [
+                        SimpleUploadedFile("new-laptop-back.png", image_bytes.getvalue(), content_type="image/png"),
+                    ],
+                },
                 format="multipart",
             )
             deleted = self.client.delete(f"/api/management/products/{product_id}/delete/")
@@ -559,9 +621,105 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(edited.status_code, 200)
         self.assertEqual(edited.data["name"], "Updated Laptop")
         self.assertEqual(edited.data["specs"], ["32GB RAM"])
+        self.assertEqual(len(created.data["images"]), 2)
+        self.assertEqual(len(edited.data["images"]), 3)
+        self.assertEqual(ProductImage.objects.filter(product_id=product_id).count(), 2)
         self.assertEqual(deleted.status_code, 204)
         self.assertTrue(Product.objects.filter(pk=product_id, is_active=False).exists())
+        self.assertNotIn(product_id, [item["id"] for item in self.client.get("/api/management/dashboard/").data["products"]])
+        self.assertNotIn(product_id, [
+            item["id"]
+            for item in self.client.get("/api/management/products/", {"q": "Updated Laptop"}).data["results"]
+        ])
         self.assertEqual([item["id"] for item in self.client.get("/api/products/").data], [self.product.pk])
+
+    def test_staff_can_search_and_page_through_all_inventory_products(self):
+        self.assertEqual(self.client.get("/api/management/products/", {"q": "Search target"}).status_code, 401)
+        staff = get_user_model().objects.create_user(username="inventory-search-manager", is_staff=True)
+        self.client.force_authenticate(user=staff)
+        Product.objects.bulk_create([
+            Product(
+                name=f"Search target {index:02}",
+                category="business",
+                price="500.00",
+                stock=1,
+            )
+            for index in range(51)
+        ])
+
+        first_page = self.client.get("/api/management/products/", {"q": "Search target"})
+        second_page = self.client.get("/api/management/products/", {"q": "Search target", "offset": 50})
+        missing = self.client.get("/api/management/products/", {"q": "No such product"})
+
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual(first_page.data["count"], 51)
+        self.assertEqual(len(first_page.data["results"]), 50)
+        self.assertEqual(len(second_page.data["results"]), 1)
+        self.assertEqual(missing.data["count"], 0)
+        self.assertEqual(missing.data["results"], [])
+
+        inactive_product = Product.objects.create(
+            name="Inactive Search target",
+            category="business",
+            price="500.00",
+            stock=1,
+            is_active=False,
+        )
+        filtered = self.client.get("/api/management/products/", {"q": "Search target"})
+        self.assertFalse(any(item["id"] == inactive_product.pk for item in filtered.data["results"]))
+        self.assertEqual(filtered.data["count"], 51)
+
+    def test_staff_can_replace_and_delete_individual_product_images(self):
+        staff = get_user_model().objects.create_user(username="image-manager", is_staff=True)
+        self.client.force_authenticate(user=staff)
+        image_bytes = BytesIO()
+        Image.new("RGB", (16, 16), color=(32, 92, 156)).save(image_bytes, format="PNG")
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root), patch(
+            "shop.imagesearch.embed", return_value=[0.1],
+        ):
+            created = self.client.post(
+                "/api/management/products/",
+                {
+                    "name": "Image editor laptop",
+                    "category": "business",
+                    "price": "500.00",
+                    "image_files": [
+                        SimpleUploadedFile("main.png", image_bytes.getvalue(), content_type="image/png"),
+                        SimpleUploadedFile("side.png", image_bytes.getvalue(), content_type="image/png"),
+                        SimpleUploadedFile("back.png", image_bytes.getvalue(), content_type="image/png"),
+                    ],
+                },
+                format="multipart",
+            )
+            product_id = created.data["id"]
+            original_gallery_id = created.data["image_items"][1]["id"]
+            replacement = self.client.patch(
+                f"/api/management/products/{product_id}/images/{original_gallery_id}/",
+                {"image": SimpleUploadedFile("replacement.png", image_bytes.getvalue(), content_type="image/png")},
+                format="multipart",
+            )
+            remaining_gallery_id = replacement.data["image_items"][2]["id"]
+            deleted_gallery = self.client.delete(
+                f"/api/management/products/{product_id}/images/{remaining_gallery_id}/",
+            )
+            deleted_primary = self.client.delete(
+                f"/api/management/products/{product_id}/images/primary/",
+            )
+            rejected_last_image = self.client.delete(
+                f"/api/management/products/{product_id}/images/primary/",
+            )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual([item["id"] for item in created.data["image_items"]][0], "primary")
+        self.assertEqual(replacement.status_code, 200)
+        self.assertEqual(len(replacement.data["images"]), 3)
+        self.assertEqual(deleted_gallery.status_code, 200)
+        self.assertEqual(deleted_primary.status_code, 200)
+        self.assertEqual(deleted_primary.data["image_items"][0]["id"], "primary")
+        self.assertEqual(len(deleted_primary.data["images"]), 1)
+        self.assertEqual(rejected_last_image.status_code, 400)
+        self.assertEqual(ProductImage.objects.filter(product_id=product_id).count(), 0)
 
     def test_product_management_requires_staff_and_preserves_ordered_products(self):
         self.assertEqual(self.client.post("/api/management/products/", {}, format="json").status_code, 401)

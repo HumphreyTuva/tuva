@@ -1,7 +1,7 @@
 from django.contrib import admin
-from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, OrderItem, Product, StockAlert, StockMovement
+from .models import ChatMessage, DeliveryZone, MpesaPayment, Order, OrderItem, Product, StockAlert, StockMovement
 
-admin.site.register([DeliveryZone, DiscountCode, MpesaPayment, OrderItem, StockMovement])
+admin.site.register([DeliveryZone, MpesaPayment, OrderItem, StockMovement])
 
 
 @admin.register(ChatMessage)

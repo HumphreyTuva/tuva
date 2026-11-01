@@ -26,7 +26,7 @@ import requests
 
 from . import mpesa
 from .imagesearch import embed, similar
-from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, OrderItem, Product, StockAlert
+from .models import AvailabilityRequest, ChatMessage, DeliveryZone, MpesaPayment, Order, OrderItem, Product, StockAlert
 from .serializers import ProductSerializer
 from .tasks import branded, send_html
 
@@ -62,12 +62,33 @@ def serialize_products(queryset, request):
 def products(request):
     query = request.GET.get("q", "").strip()[:120]
     category = request.GET.get("category", "").strip()[:40]
-    queryset = Product.objects.filter(is_active=True).order_by("id")
+    try:
+        offset = int(request.GET.get("offset", "0"))
+    except ValueError:
+        return Response({"error": "Offset must be a non-negative integer."}, status=400)
+    if offset < 0:
+        return Response({"error": "Offset must be a non-negative integer."}, status=400)
+    queryset = Product.objects.filter(is_active=True).prefetch_related("gallery_images").order_by("id")
     if query:
         queryset = queryset.filter(Q(name__icontains=query) | Q(subtitle__icontains=query) | Q(category__icontains=query))
     if category:
         queryset = queryset.filter(category__iexact=category)
-    return Response(serialize_products(queryset[:48], request))
+    if request.GET.get("include_count") == "true":
+        return Response({
+            "count": queryset.count(),
+            "results": serialize_products(queryset[offset:offset + 48], request),
+        })
+    return Response(serialize_products(queryset[offset:offset + 48], request))
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def product_detail(request, pk):
+    product = get_object_or_404(
+        Product.objects.filter(is_active=True).prefetch_related("gallery_images"),
+        pk=pk,
+    )
+    return Response(ProductSerializer(product, context={"request": request}).data)
 
 
 @api_view(["POST"])
@@ -81,7 +102,10 @@ def image_search(request):
         vector = embed(image)
     except (Image.DecompressionBombError, OSError, ValueError, TypeError):
         return Response({"error": "We couldn't read that image. Try a JPG, PNG, or WebP."}, status=400)
-    matches = similar(vector, Product.objects.filter(is_active=True).exclude(embedding=None).order_by("id"))
+    matches = similar(
+        vector,
+        Product.objects.filter(is_active=True).exclude(embedding=None).prefetch_related("gallery_images").order_by("id"),
+    )
     return Response(serialize_products(matches, request))
 
 
@@ -97,8 +121,14 @@ def subscribe_alert(request):
         validate_email(email)
     except ValidationError:
         return Response({"error": "Enter a valid email address."}, status=400)
-    product = Product.objects.filter(name__icontains=query).first()
-    alert, created = StockAlert.objects.get_or_create(email=email, query=query, product=product, notified=False)
+    if request.data.get("consent") is not True:
+        return Response({"error": "Consent is required to receive availability emails."}, status=400)
+    product = Product.objects.filter(name__iexact=query).first()
+    alert, created = AvailabilityRequest.objects.get_or_create(
+        email=email, query=query, status="active",
+        defaults={"consent": True, "matched_product": product,
+                  "brand": str(request.data.get("brand", "")).strip()[:80]},
+    )
     if created:
         send_html.delay(
             email,
@@ -106,6 +136,18 @@ def subscribe_alert(request):
             branded("We'll let you know", f"We'll email you as soon as “{query}” is available.", "Keep browsing", settings.FRONTEND_URL),
         )
     return Response({"ok": True}, status=201 if created else 200)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def unsubscribe_alert(request, token):
+    found = AvailabilityRequest.objects.filter(token=token).first()
+    if not found:
+        raise Http404
+    if found.status != "unsubscribed":
+        found.status = "unsubscribed"
+        found.save(update_fields=["status"])
+    return Response({"ok": True, "message": "You have been unsubscribed."})
 
 
 @api_view(["POST"])
@@ -215,7 +257,7 @@ def delivery_zones(request):
 
 
 @transaction.atomic
-def calculate_cart_quote(items, delivery_zone_id=None, discount_code=""):
+def calculate_cart_quote(items, delivery_zone_id=None):
     if not isinstance(items, list) or not items:
         return None, ["Add at least one product to your cart."]
     normalized = {}
@@ -256,26 +298,14 @@ def calculate_cart_quote(items, delivery_zone_id=None, discount_code=""):
         else:
             delivery_fee = zone.fee
     subtotal = sum((line["line_total"] for line in lines), start=Decimal("0.00"))
-    discount = Decimal("0.00")
-    if discount_code:
-        now = timezone.now()
-        code = DiscountCode.objects.filter(code__iexact=discount_code, active=True).first()
-        if not code or (code.starts_at and now < code.starts_at) or (code.ends_at and now >= code.ends_at):
-            issues.append("That discount code is not available.")
-        elif code.value <= 0 or (code.kind == DiscountCode.PERCENT and code.value > 100):
-            issues.append("That discount code is not configured correctly.")
-        elif code.kind == DiscountCode.PERCENT:
-            discount = (subtotal * code.value / Decimal("100")).quantize(Decimal("0.01"))
-        else:
-            discount = min(subtotal, code.value)
     if issues:
         return None, issues
-    total = subtotal + delivery_fee - discount
+    total = subtotal + delivery_fee
     amount_kes = mpesa.round_kes_amount(total)
     if amount_kes is None:
         return None, ["The total is invalid for M-PESA checkout."]
     return {"items": lines, "zone": zone, "subtotal": subtotal, "delivery_fee": delivery_fee,
-            "discount": discount, "total": total, "amount_kes": amount_kes}, []
+            "total": total, "amount_kes": amount_kes}, []
 
 
 @api_view(["GET", "POST"])
@@ -284,7 +314,6 @@ def checkout_quote(request):
     if request.method == "POST":
         quote, issues = calculate_cart_quote(
             request.data.get("items"), request.data.get("delivery_zone"),
-            str(request.data.get("discount_code", "")).strip(),
         )
         if issues:
             return Response({"issues": issues}, status=400)
@@ -293,7 +322,7 @@ def checkout_quote(request):
                        "quantity": line["quantity"], "unit_price": line["unit_price"], "line_total": line["line_total"]}
                       for line in quote["items"]],
             "subtotal": quote["subtotal"], "delivery_fee": quote["delivery_fee"],
-            "discount": quote["discount"], "total": quote["total"],
+            "total": quote["total"],
             "amount_kes": quote["amount_kes"], "delivery_zone": quote["zone"].name if quote["zone"] else None,
         })
     try:
@@ -302,13 +331,13 @@ def checkout_quote(request):
         return Response({"error": "Choose a valid quantity."}, status=400)
     quote, issues = calculate_cart_quote(
         [{"product": request.query_params.get("product"), "quantity": quantity}],
-        request.query_params.get("delivery_zone"), request.query_params.get("discount_code", ""),
+        request.query_params.get("delivery_zone"),
     )
     if issues:
         return Response({"error": "; ".join(issues), "issues": issues}, status=400)
     return Response({"amount_kes": quote["amount_kes"], "quantity": quantity,
                      "subtotal": quote["subtotal"], "delivery_fee": quote["delivery_fee"],
-                     "discount": quote["discount"], "total": quote["total"]})
+                     "total": quote["total"]})
 
 
 @api_view(["POST"])
@@ -355,7 +384,7 @@ def checkout(request):
                 return Response({"order": previous.pk, "reference": previous.reference, "amount_kes": previous.payment_amount,
                                  **({"access_token": previous.guest_access_token} if is_guest else {}),
                                  "message": "This payment request is already being processed."})
-        quote, issues = calculate_cart_quote(items, request.data.get("delivery_zone"), str(request.data.get("discount_code", "")).strip())
+        quote, issues = calculate_cart_quote(items, request.data.get("delivery_zone"))
         if issues:
             return Response({"error": "; ".join(issues), "issues": issues}, status=400)
         amount_kes = quote["amount_kes"]
@@ -373,7 +402,7 @@ def checkout(request):
             delivery_zone=quote["zone"],
             subtotal=quote["subtotal"],
             delivery_fee=quote["delivery_fee"],
-            discount=quote["discount"],
+            discount=Decimal("0.00"),
             total=quote["total"],
             payment_method="mpesa",
             status="pending_payment",

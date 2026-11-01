@@ -10,6 +10,10 @@ class Product(models.Model):
     name = models.CharField(max_length=120, db_index=True)
     subtitle = models.CharField(max_length=120, blank=True)
     category = models.CharField(max_length=40, db_index=True)
+    brand = models.CharField(max_length=80, blank=True, db_index=True)
+    model = models.CharField(max_length=120, blank=True, db_index=True)
+    sku = models.CharField(max_length=64, blank=True, db_index=True)
+    aliases = models.JSONField(default=list, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     compare_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     specs = models.JSONField(default=list)
@@ -34,10 +38,54 @@ class Product(models.Model):
     @property
     def available_stock(self):
         return max(0, self.stock - self.reserved)
+
+
+class ProductImage(models.Model):
+    product = models.ForeignKey(Product, related_name="gallery_images", on_delete=models.CASCADE)
+    image = models.ImageField(upload_to="products/")
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
 class StockAlert(models.Model):
     email = models.EmailField(); query = models.CharField(max_length=200)
     product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.CASCADE)
     notified = models.BooleanField(default=False); created = models.DateTimeField(auto_now_add=True)
+
+
+def new_availability_token():
+    return get_random_string(48)
+
+
+class AvailabilityRequest(models.Model):
+    STATUS_CHOICES = [(value, value.title()) for value in ("active", "notified", "unsubscribed")]
+    email = models.EmailField(db_index=True)
+    query = models.CharField(max_length=200)
+    brand = models.CharField(max_length=80, blank=True)
+    reference_url = models.URLField(max_length=500, blank=True)
+    notes = models.CharField(max_length=500, blank=True)
+    consent = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="active", db_index=True)
+    token = models.CharField(max_length=64, unique=True, default=new_availability_token)
+    matched_product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.SET_NULL)
+    created = models.DateTimeField(auto_now_add=True, db_index=True)
+    notified_at = models.DateTimeField(null=True, blank=True)
+
+
+class EmailLog(models.Model):
+    STATUS_CHOICES = [(value, value.title()) for value in ("pending", "sending", "sent", "failed")]
+    kind = models.CharField(max_length=40, db_index=True)
+    to_email = models.EmailField()
+    subject = models.CharField(max_length=200)
+    html = models.TextField()
+    text = models.TextField(blank=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending", db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    error = models.TextField(blank=True)
+    dedupe_key = models.CharField(max_length=160, unique=True)
+    availability_request = models.ForeignKey(AvailabilityRequest, null=True, blank=True, on_delete=models.SET_NULL)
+    created = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
 class ChatMessage(models.Model):
     SENDER_CHOICES = [("customer", "Customer"), ("support", "Support")]
     conversation = models.UUIDField(default=uuid.uuid4, db_index=True)

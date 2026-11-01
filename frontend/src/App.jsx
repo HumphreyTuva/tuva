@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { GoogleLogin } from "@react-oauth/google";
+import { createPortal } from "react-dom";
 import {
   ArrowUp,
   BadgeCheck,
+  BellRing,
   Box,
   BriefcaseBusiness,
   Building2,
   Camera,
   Check,
+  ChevronLeft,
   ChevronDown,
   ChevronRight,
   CircleCheck,
@@ -27,9 +30,11 @@ import {
   Menu,
   MessageCircle,
   MessageSquare,
+  Minus,
   Package,
   PackageCheck,
   Percent,
+  Plus,
   Search,
   ShieldCheck,
   ShoppingBag,
@@ -39,6 +44,7 @@ import {
   Tag,
   Tablet,
   Truck,
+  Trash2,
   UserRound,
   X,
 } from "lucide-react";
@@ -53,8 +59,12 @@ const categories = [
   { name: "2-in-1 laptops", id: "2-in-1", icon: "tablet", hint: "Flexible productivity" },
   { name: "Accessories", id: "accessories", icon: "headphones", hint: "Make it complete" },
 ];
+const PRODUCT_PAGE_SIZE = 48;
 const money = (value) => value == null ? "Price unavailable" : `KSh ${Number(value).toLocaleString("en-KE", { maximumFractionDigits: 0 })}`;
 const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const productIdFromPath = () => window.location.pathname.match(/^\/products\/(\d+)\/?$/)?.[1] || null;
+const isCatalogPath = () => /^\/products\/?$/.test(window.location.pathname);
+const isAdminPath = () => /^\/admin\/?$/.test(window.location.pathname);
 
 function Icon({ name, size = 22, className = "", strokeWidth = 1.8 }) {
   const icons = {
@@ -105,15 +115,35 @@ function Icon({ name, size = 22, className = "", strokeWidth = 1.8 }) {
   return <LucideIcon aria-hidden="true" className={`svg-icon icon-${name} ${className}`} size={size} strokeWidth={strokeWidth} />;
 }
 
-function ProductCard({ product, onAdd }) {
+function ProductCard({ product, onAdd, onOpen }) {
+  const images = product.images?.length ? product.images : product.image ? [product.image] : [];
+  const [selectedImage, setSelectedImage] = useState(0);
+  const [imageFailed, setImageFailed] = useState(false);
+  const changeImage = (index) => {
+    setSelectedImage(index);
+    setImageFailed(false);
+  };
+
   return (
     <article className="product-card">
       {product.badge && <span className="badge">{product.badge}</span>}
-      <div className="product-image">
-        <img src={product.image} alt={product.name} loading="lazy" />
-      </div>
+      <button className="product-image" type="button" onClick={() => onOpen(product)}
+        aria-label={`View ${product.name} details`}>
+        {images.length > 0 && !imageFailed ? <img key={images[selectedImage]} src={images[selectedImage]} alt={product.name}
+          loading="lazy" onError={() => setImageFailed(true)} /> : <span className="product-image-unavailable">Image unavailable</span>}
+        {images.length > 1 && <span className="product-image-count">{images.length} photos · view details</span>}
+      </button>
+      {images.length > 1 && <div className="product-image-thumbnails" aria-label={`${product.name} photos`}>
+        {images.map((image, index) => <button key={`${image}-${index}`} type="button"
+          className={index === selectedImage ? "selected" : ""} onClick={() => changeImage(index)}
+          aria-label={`Show ${product.name} photo ${index + 1}`} aria-pressed={index === selectedImage}>
+          <img src={image} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} />
+        </button>)}
+      </div>}
       <div className="product-info">
-        <div className="product-title"><h3>{product.name}</h3><span className="supplier-check" title="Verified supplier"><Check size={10} strokeWidth={3} /></span></div>
+        <button className="product-title product-title-link" type="button" onClick={() => onOpen(product)}>
+          <h3>{product.name}</h3><span className="supplier-check" title="Verified supplier"><Check size={10} strokeWidth={3} /></span>
+        </button>
         <p className="product-subtitle">{product.subtitle}</p>
         <p className="price">{money(product.price_min_kes)}</p>
         <p className="verified"><BadgeCheck size={12} aria-hidden="true" /> Verified supplier</p>
@@ -123,16 +153,264 @@ function ProductCard({ product, onAdd }) {
         <span className={product.in_stock ? "stock-label" : "stock-label unavailable"}>
           {product.in_stock ? "In stock" : "Currently unavailable"}
         </span>
-        <button className="btn card-cta" disabled={!product.in_stock} onClick={() => onAdd(product)}>
-          {product.in_stock ? "Add to cart" : "Out of stock"}
+        <button className={`btn card-cta${product.in_stock ? "" : " notify-cta"}`}
+          aria-label={product.in_stock ? `Add ${product.name} to cart` : `Get notified when ${product.name} is back in stock`}
+          onClick={() => product.in_stock ? onAdd(product) : onOpen(product, true)}>
+          {product.in_stock ? "Add to cart" : "Notify me"}
         </button>
       </div>
     </article>
   );
 }
 
-function AvailabilityAlert({ query, userEmail }) {
+function ProductDetailPage({ productId, initialProduct, openNotifyOnLoad = false, onBack, onAdd, onBuyNow, onContact }) {
+  const [product, setProduct] = useState(initialProduct || null);
+  const [loading, setLoading] = useState(!initialProduct);
+  const [error, setError] = useState("");
+  const [selectedImage, setSelectedImage] = useState(0);
+  const [quantity, setQuantity] = useState(1);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerImagesExpanded, setViewerImagesExpanded] = useState(false);
+  const [viewerZoomed, setViewerZoomed] = useState(false);
+  const availabilityAlertRef = useRef(null);
+  const images = product?.images?.length ? product.images : product?.image ? [product.image] : [];
+  const viewerStripStart = Math.min(Math.max(selectedImage - 3, 0), Math.max(images.length - 4, 0));
+  const viewerStripImages = images.slice(viewerStripStart, viewerStripStart + 4);
+
+  useEffect(() => {
+    let active = true;
+    if (initialProduct) {
+      setProduct(initialProduct);
+      setLoading(false);
+      setError("");
+      return () => { active = false; };
+    }
+    setLoading(true);
+    setError("");
+    api.product(productId).then((result) => {
+      if (active) setProduct(result);
+    }).catch((requestError) => {
+      if (active) setError(requestError.message);
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [productId, initialProduct]);
+
+  useEffect(() => {
+    setSelectedImage(0);
+    setQuantity(1);
+    setViewerImagesExpanded(false);
+  }, [productId]);
+
+  useEffect(() => setViewerZoomed(false), [selectedImage]);
+
+  useEffect(() => {
+    if (!loading && !error && product && !product.in_stock && openNotifyOnLoad) {
+      const timer = window.setTimeout(() => {
+        availabilityAlertRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 80);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [error, loading, openNotifyOnLoad, product]);
+
+  useEffect(() => {
+    if (!viewerOpen || images.length < 2) return undefined;
+    const handleKeys = (event) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setSelectedImage((index) => (index + images.length - 1) % images.length);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setSelectedImage((index) => (index + 1) % images.length);
+      }
+    };
+    window.addEventListener("keydown", handleKeys);
+    return () => window.removeEventListener("keydown", handleKeys);
+  }, [viewerOpen, images.length]);
+
+  useEffect(() => {
+    if (!product) return undefined;
+    const previousTitle = document.title;
+    document.title = `${product.name} | TUVA`;
+    return () => { document.title = previousTitle; };
+  }, [product?.name]);
+
+  if (loading) {
+    return <main className="storefront product-page"><div className="product-detail-loading" role="status">Loading product details…</div></main>;
+  }
+  if (error || !product) {
+    return <main className="storefront product-page"><section className="product-detail-error" role="alert">
+      <Package size={28} /><h1>We couldn’t load this product</h1><p>{error || "This product is no longer available."}</p>
+      <button className="btn" onClick={onBack}>Back to laptops</button>
+    </section></main>;
+  }
+
+  const setImage = (index) => setSelectedImage((index + images.length) % images.length);
+  const comparisonPrice = Number(product.price_max_kes) > Number(product.price_min_kes) ? product.price_max_kes : null;
+
+  return (
+    <main className="storefront product-page">
+      <nav className="product-breadcrumbs" aria-label="Breadcrumb">
+        <button type="button" onClick={onBack}><House size={14} /> Home</button><ChevronRight size={14} />
+        <span>Computers &amp; Office</span><ChevronRight size={14} /><span>{product.category || "Products"}</span>
+        <ChevronRight size={14} /><strong>{product.name}</strong>
+      </nav>
+
+      <div className="product-detail-layout">
+        <section className="product-gallery" aria-label={`${product.name} product photos`}>
+          <div className="product-gallery-thumbnails">
+            {images.map((image, index) => <button key={`${image}-${index}`} type="button"
+              className={index === selectedImage ? "selected" : ""} onClick={() => setImage(index)}
+              aria-label={`Show product photo ${index + 1}`} aria-pressed={index === selectedImage}>
+              <img src={image} alt="" />
+            </button>)}
+          </div>
+          <div className="product-gallery-main">
+            {images.length > 0 ? <button className="product-gallery-zoom" type="button"
+              onClick={() => setViewerOpen(true)} aria-label="Open product photo gallery">
+              <img src={images[selectedImage]} alt={product.name} />
+              {images.length > 1 && <span>{selectedImage + 1} / {images.length} · View photos</span>}
+            </button> : <div className="product-gallery-unavailable"><Package size={42} /><span>Product image coming soon</span></div>}
+            {images.length > 1 && <>
+              <button className="product-gallery-arrow previous" type="button" aria-label="Previous photo"
+                onClick={() => setImage(selectedImage - 1)}><ChevronLeft size={20} /></button>
+              <button className="product-gallery-arrow next" type="button" aria-label="Next photo"
+                onClick={() => setImage(selectedImage + 1)}><ChevronRight size={20} /></button>
+            </>}
+          </div>
+        </section>
+
+        <section className="product-detail-info">
+          <span className="product-category-pill">{product.category || "TUVA product"}</span>
+          <h1>{product.name}</h1>
+          {product.subtitle && <p className="product-detail-subtitle">{product.subtitle}</p>}
+          <div className="product-detail-trust"><span><BadgeCheck size={16} /> Verified supplier</span>
+            <span className={product.in_stock ? "available" : "unavailable"}><i />{product.in_stock ? "In stock" : "Currently unavailable"}</span></div>
+          <div className="product-detail-price">
+            <strong>{money(product.price_min_kes)}</strong>
+            {comparisonPrice && <del>{money(comparisonPrice)}</del>}
+            <span>Price shown in Kenyan shillings</span>
+          </div>
+          {product.specs?.length > 0 && <section className="product-key-features">
+            <h2>Key features</h2><ul>{product.specs.slice(0, 6).map((spec) =>
+              <li key={spec}><Check size={15} />{spec}</li>)}</ul>
+          </section>}
+          <div className="product-buy-row">
+            <span>Quantity</span>
+            <div className="product-quantity">
+              <button type="button" aria-label="Decrease quantity" disabled={quantity <= 1}
+                onClick={() => setQuantity((value) => Math.max(1, value - 1))}><Minus size={16} /></button>
+              <span aria-live="polite">{quantity}</span>
+              <button type="button" aria-label="Increase quantity" onClick={() => setQuantity((value) => value + 1)}><Plus size={16} /></button>
+            </div>
+          </div>
+          <div className="product-detail-actions">
+            {product.in_stock ? <>
+              <button type="button" className="btn product-add-button"
+                onClick={() => onAdd(product, quantity)}><ShoppingCart size={18} /> Add to cart</button>
+              <button type="button" className="product-buy-button"
+                onClick={() => onBuyNow(product, quantity)}>Buy now <ChevronRight size={18} /></button>
+            </> : <button type="button" className="btn product-notify-button"
+              aria-label={`Notify me when ${product.name} is available`}
+              onClick={() => availabilityAlertRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+              <BellRing size={18} /> Notify me when available
+            </button>}
+          </div>
+          {!product.in_stock && <p className="product-stock-note">Currently unavailable. Leave your email and we’ll notify you when it’s back.</p>}
+          {!product.in_stock && <div ref={availabilityAlertRef} className="product-availability-alert">
+            <AvailabilityAlert query={product.name} productName={product.name} userEmail={localStorage.getItem("tuva_email") || ""} />
+          </div>}
+          <div className="product-assurances">
+            <span><ShieldCheck size={18} /><span><strong>Secure checkout</strong><small>Protected M-PESA payment</small></span></span>
+            <span><Truck size={18} /><span><strong>Delivery options</strong><small>Confirmed at checkout</small></span></span>
+            <span><MessageCircle size={18} /><span><strong>Need help?</strong><small>Talk to our team</small></span></span>
+          </div>
+        </section>
+
+        <aside className="product-seller-card">
+          <div className="product-seller-heading"><span className="product-seller-mark">T</span><span><strong>Sold by TUVA Stores</strong><small><BadgeCheck size={13} /> Verified supplier</small></span><ChevronRight size={17} /></div>
+          <div className="product-seller-message"><strong>Shopping with confidence</strong><p>Our team is here to help with product questions, delivery, and checkout.</p></div>
+          <button type="button" className="product-contact-button" onClick={onContact}><MessageCircle size={16} /> Contact TUVA</button>
+          <div className="product-shipping-card"><strong><MapPin size={16} /> Delivery in Kenya</strong>
+            <p>Available delivery and collection options are shown during checkout.</p>
+            <span><Truck size={16} /> Delivery details confirmed with your order</span>
+          </div>
+        </aside>
+      </div>
+
+      <section className="product-more-details">
+        <nav aria-label="Product information">
+          <a href="#product-description">Product details</a>
+          {product.specs?.length > 0 && <a href="#product-specifications">Specifications</a>}
+          <a href="#product-shipping">Shipping &amp; payment</a>
+        </nav>
+        <div className="product-detail-columns">
+          <section id="product-description"><h2>Product details</h2>
+            <p>{product.subtitle || `${product.name} is available from TUVA Stores. Contact us if you need help choosing the right product.`}</p>
+          </section>
+          {product.specs?.length > 0 && <section id="product-specifications"><h2>Specifications</h2>
+            <ul>{product.specs.map((spec) => <li key={spec}>{spec}</li>)}</ul>
+          </section>}
+          <section id="product-shipping"><h2>Shipping &amp; payment</h2>
+            <p>Choose an available delivery or collection option during checkout. Pay securely with M-PESA.</p>
+          </section>
+        </div>
+      </section>
+
+      {viewerOpen && <Modal title={`${product.name} photos`} onClose={() => setViewerOpen(false)} className="product-image-dialog">
+        <div className="product-viewer">
+          <div className="product-viewer-rail" aria-label="Product photos">
+            {images.slice(0, viewerImagesExpanded ? images.length : 6).map((image, index) => <button key={`${image}-${index}`}
+              type="button" className={index === selectedImage ? "selected" : ""} onClick={() => setImage(index)}
+              aria-label={`Show photo ${index + 1}`} aria-pressed={index === selectedImage}>
+              <img src={image} alt="" />
+            </button>)}
+            {!viewerImagesExpanded && images.length > 6 && <button type="button" className="product-viewer-more"
+              onClick={() => setViewerImagesExpanded(true)} aria-label={`Show ${images.length - 6} more photos`}>
+              +{images.length - 6}
+            </button>}
+          </div>
+          <div className="product-viewer-stage" onWheel={(event) => {
+            if (event.deltaY !== 0) setViewerZoomed(event.deltaY < 0);
+          }}>
+            <img className={viewerZoomed ? "zoomed" : ""} src={images[selectedImage]}
+              alt={`${product.name}, photo ${selectedImage + 1} of ${images.length}`} />
+            {images.length > 1 && <>
+              <button type="button" className="product-viewer-arrow previous" aria-label="Previous photo"
+                onClick={() => setImage(selectedImage - 1)}><ChevronLeft size={28} /></button>
+              <button type="button" className="product-viewer-arrow next" aria-label="Next photo"
+                onClick={() => setImage(selectedImage + 1)}><ChevronRight size={28} /></button>
+            </>}
+            <button type="button" className="product-viewer-zoom" aria-pressed={viewerZoomed}
+              onClick={() => setViewerZoomed((zoomed) => !zoomed)}>
+              <Search size={16} /> {viewerZoomed ? "Zoom out" : "Zoom in"} <span>(or scroll)</span>
+            </button>
+            <span className="product-viewer-count">{selectedImage + 1} / {images.length}</span>
+          </div>
+          <aside className="product-viewer-details">
+            <h2>{product.name}</h2>
+            {images.length > 1 && <div className="product-viewer-strip" aria-label="Choose a product photo">
+              {viewerStripImages.map((image, offset) => {
+                const index = viewerStripStart + offset;
+                return <button key={`${image}-${index}`} type="button"
+                  className={index === selectedImage ? "selected" : ""} onClick={() => setImage(index)}
+                  aria-label={`Show photo ${index + 1}`} aria-pressed={index === selectedImage}>
+                <img src={image} alt="" />
+                </button>;
+              })}
+            </div>}
+          </aside>
+        </div>
+      </Modal>}
+    </main>
+  );
+}
+
+function AvailabilityAlert({ query, userEmail, productName = "" }) {
   const [email, setEmail] = useState(userEmail || "");
+  const [consent, setConsent] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => setEmail(userEmail || ""), [userEmail, query]);
@@ -141,8 +419,10 @@ function AvailabilityAlert({ query, userEmail }) {
     setBusy(true);
     setMessage("");
     try {
-      await api.alert(email, query);
-      setMessage("You're on the list. We'll email you when a match is available.");
+      await api.alert(email, productName || query, consent);
+      setMessage(productName
+        ? `You're on the list. We'll email you at ${email} when ${productName} is back in stock.`
+        : "You're on the list. We'll email you when a match is available.");
       setEmail(userEmail || "");
     } catch (error) {
       setMessage(error.message);
@@ -152,10 +432,11 @@ function AvailabilityAlert({ query, userEmail }) {
   };
   return (
     <form className="alert-card" onSubmit={submit}>
-      <div><span className="eyebrow">STOCK ALERT</span><h3>Still looking for “{query}”?</h3>
-        <p>Leave your email and we’ll let you know when it’s available.</p></div>
-      <div className="alert-form"><input type="email" required placeholder="Your email address" value={email} onChange={(event) => setEmail(event.target.value)} />
+      <div><span className="eyebrow">STOCK ALERT</span><h3>{productName ? "Get notified when it’s back" : `Still looking for “${query}”?`}</h3>
+        <p>{productName ? `Leave your email and we’ll let you know when ${productName} is available.` : "Leave your email and we’ll let you know when it’s available."}</p></div>
+      <div className="alert-form"><input type="email" required autoComplete="email" placeholder="Your email address" value={email} onChange={(event) => setEmail(event.target.value)} />
         <button className="btn" disabled={busy}>{busy ? "Saving…" : "Notify me"}</button></div>
+      <label className="alert-consent"><input type="checkbox" required checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Email me when a matching item is available. I can unsubscribe at any time.</label>
       {message && <p className="form-message" role="status">{message}</p>}
     </form>
   );
@@ -196,15 +477,16 @@ function Modal({ title, onClose, children, className = "" }) {
       if (previousFocus instanceof HTMLElement) previousFocus.focus();
     };
   }, []);
-  return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+  return createPortal((
+    <div className={`modal-backdrop${["cart-dialog", "checkout-dialog"].includes(className) ? " cart-backdrop" : ""}${className === "product-image-dialog" ? " product-image-backdrop" : ""}`}
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section ref={dialogRef} className={`dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="dialog-heading"><div><span className="eyebrow">TUVA</span><h2 id={titleId}>{title}</h2></div>
           <button className="icon-button close-button" aria-label="Close" onClick={onClose}><X size={19} /></button></div>
         {children}
       </section>
     </div>
-  );
+  ), document.body);
 }
 
 function SignIn({ onSignedIn, onClose }) {
@@ -286,7 +568,6 @@ function Checkout({ product, quantity, user, userEmail, onClose, onSignIn, onPai
   const [guestAccessToken, setGuestAccessToken] = useState("");
   const [deliveryZones, setDeliveryZones] = useState([]);
   const [deliveryZone, setDeliveryZone] = useState("");
-  const [discountCode, setDiscountCode] = useState("");
   const [address, setAddress] = useState("");
   const [city, setCity] = useState("");
   const phoneStorageKey = user ? `tuva_mpesa_phone:${localStorage.getItem("tuva_token") || user.toLowerCase()}` : "";
@@ -311,13 +592,13 @@ function Checkout({ product, quantity, user, userEmail, onClose, onSignIn, onPai
     let active = true;
     setQuote(null);
     setQuoteError("");
-    api.quote(product.id, quantity, deliveryZone, discountCode).then((result) => {
+    api.quote(product.id, quantity, deliveryZone).then((result) => {
       if (active) setQuote(result);
     }).catch((error) => {
       if (active) setQuoteError(error.message);
     });
     return () => { active = false; };
-  }, [product.id, quantity, deliveryZone, discountCode]);
+  }, [product.id, quantity, deliveryZone]);
   const pay = async (event) => {
     event.preventDefault();
     if (paymentComplete) return;
@@ -336,7 +617,7 @@ function Checkout({ product, quantity, user, userEmail, onClose, onSignIn, onPai
         setMessage("Sending a secure M-PESA prompt to your phone...");
         const result = await api.checkout(product.id, phone, quantity, checkoutKey.current, {
           full_name: user || guestName, email: user ? userEmail : guestEmail, address, city,
-          delivery_zone: deliveryZone || null, discount_code: discountCode,
+          delivery_zone: deliveryZone || null,
         });
         order = result.order;
         orderAccessToken = result.access_token || "";
@@ -386,17 +667,18 @@ function Checkout({ product, quantity, user, userEmail, onClose, onSignIn, onPai
   };
   return (
     <Modal title="Secure checkout" onClose={onClose} className="checkout-dialog">
-      <div className="checkout-product"><img src={product.image} alt="" /><div><strong>{product.name}</strong><span>Qty {quantity}</span></div>
-        <b>{money(product.price_min_kes)}</b></div>
-      <div className="kes-quote"><span>M-PESA total</span><strong>{quote ? money(quote.amount_kes) : quoteError ? "Unavailable" : "Calculating…"}</strong></div>
-      {quote && <p className="security-note">Subtotal {money(quote.subtotal)}{Number(quote.delivery_fee) > 0 ? ` · delivery ${money(quote.delivery_fee)}` : ""}{Number(quote.discount) > 0 ? ` · discount −${money(quote.discount)}` : ""}</p>}
-      {quoteError && <p className="form-message quote-error" role="alert">{quoteError}</p>}
-      {paymentComplete ? <section className="payment-confirmation" aria-live="polite">
-        <div><CircleCheck size={30} aria-hidden="true" /><span><strong>Payment confirmed</strong><small>Your order is complete. You do not need to pay again.</small></span></div>
-        <button className="btn" onClick={onClose}>Done</button>
-      </section> : <>
-        {!user && !guestCheckoutEnabled ? <div className="checkout-signin"><p>Sign in or create a TUVA account before paying by M-PESA.</p><button className="btn" onClick={onSignIn}>Sign in or create account</button></div> :
-          <form className="checkout-form" onSubmit={pay}>
+      <div className="checkout-content">
+        <div className="checkout-product"><img src={product.image} alt="" /><div><strong>{product.name}</strong><span>Qty {quantity}</span></div>
+          <b>{money(product.price_min_kes)}</b></div>
+        <div className="kes-quote"><span>M-PESA total</span><strong>{quote ? money(quote.amount_kes) : quoteError ? "Unavailable" : "Calculating…"}</strong></div>
+        {quote && <p className="security-note">Subtotal {money(quote.subtotal)}{Number(quote.delivery_fee) > 0 ? ` · delivery ${money(quote.delivery_fee)}` : ""}</p>}
+        {quoteError && <p className="form-message quote-error" role="alert">{quoteError}</p>}
+        {paymentComplete ? <section className="payment-confirmation" aria-live="polite">
+          <div><CircleCheck size={30} aria-hidden="true" /><span><strong>Payment confirmed</strong><small>Your order is complete. You do not need to pay again.</small></span></div>
+          <button className="btn" onClick={onClose}>Done</button>
+        </section> : <>
+          {!user && !guestCheckoutEnabled ? <div className="checkout-signin"><p>Sign in or create a TUVA account before paying by M-PESA.</p><button className="btn" onClick={onSignIn}>Sign in or create account</button></div> :
+            <form className="checkout-form" onSubmit={pay}>
             {!user && <>
               <label htmlFor="guest-name">Your name</label>
               <input id="guest-name" type="text" autoComplete="name" required maxLength="150" value={guestName} onChange={(event) => setGuestName(event.target.value)} />
@@ -414,39 +696,57 @@ function Checkout({ product, quantity, user, userEmail, onClose, onSignIn, onPai
               <label htmlFor="delivery-city">Town / city</label>
               <input id="delivery-city" autoComplete="address-level2" value={city} onChange={(event) => setCity(event.target.value)} />
             </>}
-            <label htmlFor="discount-code">Discount code (optional)</label>
-            <input id="discount-code" value={discountCode} onChange={(event) => setDiscountCode(event.target.value)} maxLength="40" autoCapitalize="characters" />
             <label htmlFor="mpesa-phone">M-PESA phone number</label>
             <input id="mpesa-phone" type="tel" inputMode="tel" autoComplete="tel" required minLength="9" placeholder="e.g. 0712 345 678" value={phone} onChange={(event) => setPhone(event.target.value)} />
             <button className="btn pay-button" disabled={busy || !quote}>{busy ? "Waiting for payment..." : activeOrder ? "Check payment status" : "Pay with M-PESA"}</button>
             <p className="security-note">Secure payment via Safaricom M-PESA STK Push. Prices are shown and charged in Kenyan shillings.</p>
-          </form>}
-        <div className="checkout-whatsapp"><span>Prefer to confirm details before paying?</span>
-          <a className="outline-button" href={`https://wa.me/${whatsappNumber || ""}?text=${encodeURIComponent(`Hi TUVA, I would like to order ${product.name} (quantity ${quantity}) for ${money(quote?.amount_kes ?? product.price_min_kes)}. Please confirm availability and payment options.`)}`} target="_blank" rel="noreferrer">
-            <Icon name="whatsapp" size={17} />Order via WhatsApp
-          </a><small>Confirm stock and discuss payment options with our team.</small>
-        </div>
-      </>}
-      {message && <p className={`form-message checkout-feedback ${messageType}`} role="status" aria-live="polite">{message}</p>}
+            </form>}
+          <div className="checkout-whatsapp"><span>Prefer to confirm details before paying?</span>
+            <a className="outline-button" href={`https://wa.me/${whatsappNumber || ""}?text=${encodeURIComponent(`Hi TUVA, I would like to order ${product.name} (quantity ${quantity}) for ${money(quote?.amount_kes ?? product.price_min_kes)}. Please confirm availability and payment options.`)}`} target="_blank" rel="noreferrer">
+              <Icon name="whatsapp" size={17} />Order via WhatsApp
+            </a><small>Confirm stock and discuss payment options with our team.</small>
+          </div>
+        </>}
+        {message && <p className={`form-message checkout-feedback ${messageType}`} role="status" aria-live="polite">{message}</p>}
+      </div>
     </Modal>
   );
 }
 
-function CartDialog({ items, onClose, onBrowse, onRemove, onCheckout }) {
+function CartDialog({ items, onClose, onBrowse, onRemove, onChangeQuantity, onCheckout }) {
   const subtotal = items.every((item) => item.product.price_min_kes != null)
     ? items.reduce((sum, item) => sum + Number(item.product.price_min_kes) * item.quantity, 0)
     : null;
   return (
-    <Modal title="Your cart" onClose={onClose} className="cart-dialog">
-      {items.length ? <>
-        <div className="cart-items">{items.map(({ product, quantity }) => <article className="cart-item" key={product.id}>
-          <img src={product.image} alt="" /><div className="cart-item-copy"><strong>{product.name}</strong><span>Qty {quantity} · {money(product.price_min_kes)} each</span>
-            <button onClick={() => onRemove(product.id)}>Remove</button></div><b>{money(product.price_min_kes == null ? null : product.price_min_kes * quantity)}</b>
-          <button className="btn cart-checkout" onClick={() => onCheckout(product, quantity)}>Checkout item</button>
-        </article>)}</div>
-        <div className="cart-total"><span>Estimated subtotal</span><strong>{money(subtotal)}</strong></div>
-        <p className="security-note">Each item is checked for live availability before secure M-PESA checkout.</p>
-      </> : <div className="cart-empty"><span><Icon name="bag" size={30} /></span><strong>Your cart is waiting for a great laptop.</strong><p>Explore the latest deals and add your favorites.</p><button className="btn" onClick={onBrowse}>Browse deals</button></div>}
+    <Modal title={`Your bag (${items.reduce((count, item) => count + item.quantity, 0)})`} onClose={onClose} className="cart-dialog">
+      <div className="cart-content">
+        {items.length ? <>
+          <div className="cart-items">{items.map(({ product, quantity }) => <article className={`cart-item${items.length === 1 ? " cart-item-single" : ""}`} key={product.id}>
+            <img src={product.image} alt="" />
+            <div className="cart-item-copy">
+              <strong>{product.name}</strong><span>{money(product.price_min_kes)} each</span>
+              <div className="cart-quantity" aria-label={`Quantity ${quantity}`}>
+                <button type="button" aria-label={`Decrease ${product.name} quantity`} disabled={quantity <= 1}
+                  onClick={() => onChangeQuantity(product.id, quantity - 1)}><Minus size={15} /></button>
+                <span>{quantity}</span>
+                <button type="button" aria-label={`Increase ${product.name} quantity`}
+                  onClick={() => onChangeQuantity(product.id, quantity + 1)}><Plus size={15} /></button>
+              </div>
+              <button className="btn cart-checkout" onClick={() => onCheckout(product, quantity)}>Checkout item</button>
+            </div>
+            <b>{money(product.price_min_kes == null ? null : product.price_min_kes * quantity)}</b>
+            <button className="cart-remove" type="button" aria-label={`Remove ${product.name} from cart`}
+              onClick={() => onRemove(product.id)}><Trash2 size={17} /></button>
+          </article>)}</div>
+          <div className="cart-footer">
+            <div className="cart-total"><span>Subtotal</span><strong>{money(subtotal)}</strong></div>
+            {items.length === 1 ? <button className="btn cart-primary-checkout"
+              onClick={() => onCheckout(items[0].product, items[0].quantity)}>Checkout <ChevronRight size={19} /></button> :
+              <p className="security-note">Choose an item above to check out. Each item is checked for live availability before secure M-PESA checkout.</p>}
+            {items.length === 1 && <p className="security-note">Secure checkout with M-PESA. Delivery options are confirmed during checkout.</p>}
+          </div>
+        </> : <div className="cart-empty"><span><Icon name="bag" size={30} /></span><strong>Your cart is waiting for a great laptop.</strong><p>Explore the catalogue and add your favorites.</p><button className="btn" onClick={onBrowse}>Browse laptops</button></div>}
+      </div>
     </Modal>
   );
 }
@@ -554,9 +854,16 @@ function LiveChat({ onClose }) {
 
 export default function App() {
   const [products, setProducts] = useState([]);
+  const [selectedProductId, setSelectedProductId] = useState(productIdFromPath);
+  const [openProductNotify, setOpenProductNotify] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(isCatalogPath);
+  const [adminOpen, setAdminOpen] = useState(isAdminPath);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreProducts, setHasMoreProducts] = useState(false);
+  const [totalProductCount, setTotalProductCount] = useState(0);
   const [error, setError] = useState("");
   const [cart, setCart] = useState([]);
   const [cartAnnouncement, setCartAnnouncement] = useState("");
@@ -564,7 +871,6 @@ export default function App() {
   const [checkout, setCheckout] = useState(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
   const [signInOpen, setSignInOpen] = useState(false);
   const [signInError, setSignInError] = useState("");
   const [user, setUser] = useState(() => localStorage.getItem("tuva_user") || "");
@@ -585,12 +891,23 @@ export default function App() {
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
 
   useEffect(() => {
+    const handlePopState = () => {
+      setSelectedProductId(productIdFromPath());
+      setOpenProductNotify(false);
+      setCatalogOpen(isCatalogPath());
+      setAdminOpen(isAdminPath());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
     const openAdminShortcut = (event) => {
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "a" && !event.repeat) {
         const target = event.target;
         if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
         event.preventDefault();
-        setAdminOpen(true);
+        openAdmin();
       }
     };
     window.addEventListener("keydown", openAdminShortcut);
@@ -610,23 +927,50 @@ export default function App() {
     return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
   }, [chatOpen]);
 
-  const loadProducts = useCallback(async (search = query, selectedCategory = category) => {
+  const loadProducts = useCallback(async (search = query, selectedCategory = category, includeCount = catalogOpen) => {
     const requestId = ++searchRequestId.current;
     setImageSearchActive(false);
     setImageSearchBusy(false);
     setLoading(true);
+    setLoadingMore(false);
+    setHasMoreProducts(false);
+    setTotalProductCount(0);
     setError("");
     setProducts([]);
     try {
-      const result = await api.products(search, selectedCategory);
-      if (requestId === searchRequestId.current) setProducts(result);
+      const response = await api.products(search, selectedCategory, 0, includeCount);
+      if (requestId === searchRequestId.current) {
+        const result = includeCount ? response.results : response;
+        setProducts(result);
+        setTotalProductCount(includeCount ? response.count : result.length);
+        setHasMoreProducts(includeCount ? response.count > result.length : result.length === PRODUCT_PAGE_SIZE);
+      }
     } catch (requestError) {
       if (requestId === searchRequestId.current) setError(requestError.message);
     } finally {
       if (requestId === searchRequestId.current) setLoading(false);
     }
-  }, [category, query]);
+  }, [catalogOpen, category, query]);
+  const loadMoreProducts = async () => {
+    if (loading || loadingMore || !hasMoreProducts) return;
+    const requestId = searchRequestId.current;
+    setLoadingMore(true);
+    setError("");
+    try {
+      const response = await api.products(query, category, products.length, true);
+      if (requestId === searchRequestId.current) {
+        setProducts((current) => [...current, ...response.results]);
+        setTotalProductCount(response.count);
+        setHasMoreProducts(response.count > products.length + response.results.length);
+      }
+    } catch (requestError) {
+      if (requestId === searchRequestId.current) setError(requestError.message);
+    } finally {
+      if (requestId === searchRequestId.current) setLoadingMore(false);
+    }
+  };
   const searchAndScrollToResults = async () => {
+    goHome();
     await loadProducts();
     window.requestAnimationFrame(() => {
       const section = resultsSection.current;
@@ -658,14 +1002,14 @@ export default function App() {
     await installPrompt.userChoice;
     setInstallPrompt(null);
   };
-  const addToCart = (product) => {
+  const addToCart = (product, quantity = 1) => {
     setCart((items) => {
       const existing = items.find((item) => item.product.id === product.id);
       return existing
-        ? items.map((item) => item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item)
-        : [...items, { product, quantity: 1 }];
+        ? items.map((item) => item.product.id === product.id ? { ...item, quantity: item.quantity + quantity } : item)
+        : [...items, { product, quantity }];
     });
-    setCartAnnouncement(`${product.name} added to cart.`);
+    setCartAnnouncement(`${quantity > 1 ? `${quantity} × ` : ""}${product.name} added to cart.`);
     window.clearTimeout(cartAnnouncementTimer.current);
     cartAnnouncementTimer.current = window.setTimeout(() => setCartAnnouncement(""), 3000);
   };
@@ -677,13 +1021,17 @@ export default function App() {
     setLoading(true);
     setError("");
     setProducts([]);
+    setHasMoreProducts(false);
     if (query || category) skipProductEffect.current = true;
     setQuery("");
     setCategory("");
     setImageSearchActive(true);
     try {
       const result = await api.imageSearch(file);
-      if (requestId === searchRequestId.current) setProducts(result);
+      if (requestId === searchRequestId.current) {
+        setProducts(result);
+        setTotalProductCount(result.length);
+      }
     } catch (requestError) {
       if (requestId === searchRequestId.current) {
         setError(requestError.message);
@@ -722,6 +1070,58 @@ export default function App() {
   };
   const whatsappNumber = (import.meta.env.VITE_WHATSAPP || "").replace(/\D/g, "");
   const whatsappLink = `https://wa.me/${whatsappNumber || ""}?text=${encodeURIComponent("Hi TUVA, I need help choosing a laptop.")}`;
+  function openAdmin() {
+    if (!isAdminPath()) window.history.pushState({ admin: true }, "", "/admin/");
+    setAdminOpen(true);
+    setSelectedProductId(null);
+    setCatalogOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function closeAdmin() {
+    if (isAdminPath()) window.history.pushState({}, "", "/");
+    setAdminOpen(false);
+    setSelectedProductId(null);
+    setCatalogOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  const goHome = () => {
+    if (window.location.pathname !== "/") window.history.pushState({}, "", "/");
+    setSelectedProductId(null);
+    setOpenProductNotify(false);
+    setCatalogOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const openCatalog = () => {
+    if (!isCatalogPath()) window.history.pushState({ catalog: true }, "", "/products/");
+    setSelectedProductId(null);
+    setOpenProductNotify(false);
+    setCatalogOpen(true);
+    setImageSearchActive(false);
+    setImageSearchBusy(false);
+    if (query || category) {
+      setQuery("");
+      setCategory("");
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const openProduct = (product, focusNotify = !product.in_stock) => {
+    window.history.pushState({ productId: product.id }, "", `/products/${product.id}/`);
+    setSelectedProductId(String(product.id));
+    setOpenProductNotify(focusNotify && !product.in_stock);
+    setCatalogOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const filterCatalog = (value) => {
+    const sameFilter = !query && category === value;
+    setQuery("");
+    setCategory(value);
+    setImageSearchActive(false);
+    if (sameFilter && imageSearchActive) loadProducts("", value);
+  };
+  const selectCategory = (value) => {
+    if (selectedProductId) goHome();
+    setCategory(value);
+  };
   const openCart = () => {
     setCartOpen(true);
   };
@@ -737,12 +1137,15 @@ export default function App() {
           window.clearTimeout(logoLongPressTimer.current);
           logoLongPressTimer.current = window.setTimeout(() => {
             logoLongPressTriggered.current = true;
-            setAdminOpen(true);
+            openAdmin();
           }, 700);
         }} onPointerUp={() => window.clearTimeout(logoLongPressTimer.current)} onPointerCancel={() => window.clearTimeout(logoLongPressTimer.current)} onPointerLeave={() => window.clearTimeout(logoLongPressTimer.current)} onClick={(event) => {
           if (logoLongPressTriggered.current) {
             event.preventDefault();
             logoLongPressTriggered.current = false;
+          } else {
+            event.preventDefault();
+            goHome();
           }
         }}><img src="/logo.png" alt="TUVA" /></a>
         <button className="mobile-ai-button" aria-label="Open AI shopping assistant" onClick={() => setAiOpen(true)}><Icon name="sparkle" size={18} /></button>
@@ -764,30 +1167,74 @@ export default function App() {
         </div>
       </header>
       <nav className="desktop-nav" aria-label="Main navigation">
-        <button onClick={() => setCategory("")}><Icon name="menu" size={15} />All laptops</button>
-        {categories.slice(0, 4).map((item) => <button key={item.id} className={category === item.id ? "selected" : ""} aria-pressed={category === item.id} onClick={() => setCategory(item.id)}>{item.name}</button>)}
-        <button onClick={() => setCategory("accessories")}>Accessories</button><button onClick={() => document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" })}>Deals</button>
+        <button onClick={openCatalog}><Icon name="menu" size={15} />All laptops</button>
+        {categories.slice(0, 4).map((item) => <button key={item.id} className={category === item.id ? "selected" : ""} aria-pressed={category === item.id} onClick={() => selectCategory(item.id)}>{item.name}</button>)}
+        <button onClick={() => selectCategory("accessories")}>Accessories</button><button onClick={() => { goHome(); window.setTimeout(() => document.getElementById("products")?.scrollIntoView({ behavior: "smooth" }), 0); }}>Shop</button>
       </nav>
 
-      <main className="storefront">
+      {selectedProductId ? <ProductDetailPage key={selectedProductId} productId={selectedProductId}
+        initialProduct={products.find((item) => String(item.id) === selectedProductId)}
+        openNotifyOnLoad={openProductNotify}
+        onBack={goHome} onAdd={addToCart} onBuyNow={(product, quantity) => setCheckout({ product, quantity })}
+        onContact={() => setChatOpen(true)} /> : catalogOpen ? <main className="storefront catalog-page">
+        <nav className="product-breadcrumbs" aria-label="Breadcrumb">
+          <button type="button" onClick={goHome}><House size={14} /> Home</button><ChevronRight size={14} /><strong>All products</strong>
+        </nav>
+        <section className="catalog-heading">
+          <div><span className="eyebrow">THE TUVA COLLECTION</span>
+            <h1>{query ? `Results for “${query}”` : category ? `${categories.find((item) => item.id === category)?.name || "Laptop"} laptops` : "Shop all products"}</h1>
+            <p>Find the right tech for work, study, and everything in between.</p>
+          </div>
+          <div className="catalog-result-count" aria-live="polite"
+            aria-label={`${loading ? "Loading" : totalProductCount} products`}>
+            <strong>{loading ? "…" : totalProductCount}</strong><span>products</span>
+          </div>
+        </section>
+        <nav className="catalog-categories" aria-label="Filter products by category">
+          <button type="button" className={!category ? "selected" : ""} aria-pressed={!category}
+            onClick={() => filterCatalog("")}>All products</button>
+          {categories.map((item) => <button key={item.id} type="button"
+            className={category === item.id ? "selected" : ""} aria-pressed={category === item.id}
+            onClick={() => filterCatalog(item.id)}>
+            <Icon name={item.icon} size={15} />{item.name}
+          </button>)}
+        </nav>
+        {error && <div className="error-banner" role="alert">{error}
+          <button onClick={() => products.length && hasMoreProducts ? loadMoreProducts() : loadProducts()}>Try again</button>
+        </div>}
+        {loading ? <div className="product-grid catalog-product-grid" role="status" aria-label="Loading products" aria-busy="true">
+          {[...Array(8)].map((_, index) => <div key={index} className="product-card skeleton" />)}
+        </div> : products.length ? <div className="product-grid catalog-product-grid">
+          {products.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={openProduct} />)}
+        </div> : !error && <div className="empty-results">
+          <Search className="empty-search-icon" aria-hidden="true" size={30} strokeWidth={1.6} />
+          <h3>No products found</h3><p>Try a different search or category to explore our collection.</p>
+          {(query || category) && <button className="btn" onClick={() => { setQuery(""); setCategory(""); }}>Clear filters</button>}
+        </div>}
+        {!loading && products.length > 0 && hasMoreProducts && <div className="catalog-load-more">
+          <span>Showing {products.length} of {totalProductCount} products</span>
+          <button className="btn" type="button" disabled={loadingMore} onClick={loadMoreProducts}>
+            {loadingMore ? <><LoaderCircle size={16} className="spin" /> Loading products…</> : "Load more products"}
+          </button>
+        </div>}
+      </main> : <main className="storefront">
         <section className="hero-layout">
           <aside className="category-panel" aria-label="Shop by category">
-            {categories.map((item) => <button key={item.id} className="category-row" onClick={() => setCategory(item.id)}>
+            {categories.map((item) => <button key={item.id} className="category-row" onClick={() => selectCategory(item.id)}>
               <span className="category-icon"><Icon name={item.icon} size={21} /></span><span className="category-copy"><strong>{item.name}</strong><small>{item.hint}</small></span><span className="category-arrow"><Icon name="chevronRight" size={16} /></span>
             </button>)}
-            <button className="all-categories" onClick={() => setCategory("")}>View all categories <Icon name="chevronRight" size={16} /></button>
+            <button className="all-categories" onClick={() => selectCategory("")}>View all categories <Icon name="chevronRight" size={16} /></button>
           </aside>
           <div className="mobile-category-quick" id="mobile-categories" aria-label="Shop popular categories">
-            {[categories[0], categories[1], categories[2], categories[4]].map((item) => <button key={item.id} className={category === item.id ? "active" : ""} aria-pressed={category === item.id} onClick={() => setCategory(item.id)}>
+            {[categories[0], categories[1], categories[2], categories[4]].map((item) => <button key={item.id} className={category === item.id ? "active" : ""} aria-pressed={category === item.id} onClick={() => selectCategory(item.id)}>
               <span><Icon name={item.icon} size={28} /></span><strong>{item.name}</strong>
             </button>)}
           </div>
           <div className="hero-main"><div className="hero-copy"><span className="eyebrow">BUILT FOR WHAT’S NEXT</span><h1>Source smarter.<br />Work faster.</h1>
             <p>Reliable laptops for teams, resellers, and growing businesses.</p>
-            <div className="hero-actions"><button className="btn" onClick={() => document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" })}>Explore laptop deals</button>
+            <div className="hero-actions"><button className="btn" onClick={() => document.getElementById("products")?.scrollIntoView({ behavior: "smooth" })}>Shop laptops</button>
               <button className="outline-button" onClick={() => setAiOpen(true)}>Find my laptop</button></div></div></div>
           <aside className="promo-stack">
-            <article className="promo-card deals-promo"><div><span className="eyebrow">BUSINESS-READY DEALS</span><h2>Save up to 18%</h2><p>On bulk orders.</p><button onClick={() => document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" })}>View deals <Icon name="chevronRight" size={13} /></button></div><span className="deal-discount"><Icon name="percent" size={18} /></span><img src="/products/ultrabook.png" alt="" /></article>
             <article className="promo-card quote-promo"><div><span className="eyebrow">BUYING FOR A TEAM?</span><h2>Request bulk pricing</h2><p>Tell us what you need.<br />We’ll get back fast.</p><button onClick={() => setChatOpen(true)}>Talk to our team <Icon name="message" size={13} /></button></div><span className="promo-boxes" aria-hidden="true"><Icon name="box" size={58} strokeWidth={1.4} /></span></article>
           </aside>
         </section>
@@ -798,18 +1245,18 @@ export default function App() {
         </section>
 
 
-        <section className="products-section" id="deals" ref={resultsSection}>
-          <div className="section-heading"><div><span className="eyebrow">{imageSearchActive ? "IMAGE SEARCH" : query || category ? "YOUR SEARCH" : "CURATED FOR YOU"}</span><h2>{imageSearchActive ? "Visually similar laptops" : query ? `Results for “${query}”` : category ? `${categories.find((item) => item.id === category)?.name || "Laptop"} laptops` : "Top laptop deals"}</h2></div>
-            <button className="view-all" onClick={() => { setQuery(""); setCategory(""); }}>View all deals <Icon name="chevronRight" size={16} /></button></div>
+        <section className="products-section" id="products" ref={resultsSection}>
+          <div className="section-heading"><div><span className="eyebrow">{imageSearchActive ? "IMAGE SEARCH" : query || category ? "YOUR SEARCH" : "CURATED FOR YOU"}</span><h2>{imageSearchActive ? "Visually similar laptops" : query ? `Results for “${query}”` : category ? `${categories.find((item) => item.id === category)?.name || "Laptop"} laptops` : "Popular laptops"}</h2></div>
+            <button className="view-all" onClick={openCatalog}>View all <Icon name="chevronRight" size={16} /></button></div>
           {error && <div className="error-banner" role="alert">{error}<button onClick={() => loadProducts()}>Try again</button></div>}
           {loading ? <div className="product-grid" role="status" aria-label="Loading products" aria-busy="true">{[1, 2, 3, 4].map((item) => <div key={item} className="product-card skeleton" />)}</div> :
-            products.length ? <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} />)}</div> :
+            products.length ? <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={openProduct} />)}</div> :
               !error && <div className="empty-results"><Search className="empty-search-icon" aria-hidden="true" size={30} strokeWidth={1.6} /><h3>No matching laptops just yet</h3><p>Try a different search or get notified when something becomes available.</p></div>}
           {!loading && !error && query && (!products.length || products.every((product) => !product.in_stock)) && <AvailabilityAlert query={query} userEmail={userEmail} />}
           {!loading && !error && !products.length && !query && <button className="btn retry-button" onClick={() => loadProducts()}>Reload laptops</button>}
         </section>
 
-      </main>
+      </main>}
 
       {cartAnnouncement && <div className="cart-added-toast" role="status" aria-live="polite"><span>{cartAnnouncement}</span>
         <button onClick={() => { setCartAnnouncement(""); openCart(); }}>View cart</button></div>}
@@ -823,24 +1270,28 @@ export default function App() {
       </div>
       {chatOpen && <div ref={liveChatPanel} id="live-chat-panel"><LiveChat onClose={() => setChatOpen(false)} /></div>}
       {cartOpen && <CartDialog items={cart} onClose={() => setCartOpen(false)}
-        onBrowse={() => { setCartOpen(false); document.getElementById("deals")?.scrollIntoView({ behavior: "smooth" }); }}
+        onBrowse={() => { setCartOpen(false); openCatalog(); }}
         onRemove={(id) => setCart((items) => items.filter((item) => item.product.id !== id))}
+        onChangeQuantity={(id, quantity) => setCart((items) => items.map((item) => item.product.id === id ? { ...item, quantity } : item))}
         onCheckout={(product, quantity) => { setCartOpen(false); setCheckout({ product, quantity }); }} />}
       <nav className="mobile-tabs" aria-label="Mobile navigation">
         {[["home", "home", "Home"], ["categories", "grid", "Categories"], ["messages", "chat", "Messages"], ["cart", "bag", "Cart"]].map(([key, icon, label]) =>
           <button key={key} className={activeTab === key ? "active" : ""} onClick={() => {
             setActiveTab(key);
-            if (key === "categories") document.getElementById("mobile-categories")?.scrollIntoView({ behavior: "smooth" });
+            if (key === "categories") {
+              const categoriesSection = catalogOpen ? document.querySelector(".catalog-categories") : document.getElementById("mobile-categories");
+              categoriesSection?.scrollIntoView({ behavior: "smooth" });
+            }
             if (key === "messages") setChatOpen(true);
             if (key === "cart") openCart();
-            if (key === "home") window.scrollTo({ top: 0, behavior: "smooth" });
+            if (key === "home") goHome();
           }}><span><Icon name={icon} size={21} /></span>{label}{key === "cart" && cartCount > 0 && <b>{cartCount}</b>}</button>)}
       </nav>
       {checkout && <Checkout product={checkout.product} quantity={checkout.quantity} user={user} userEmail={userEmail} whatsappNumber={whatsappNumber} onClose={() => setCheckout(null)}
         onSignIn={() => setSignInOpen(true)} onPaid={(id) => setCart((items) => items.filter((item) => item.product.id !== id))} />}
       {aiOpen && <Assistant onClose={() => setAiOpen(false)} />}
       {signInOpen && <SignIn onClose={() => setSignInOpen(false)} onSignedIn={handleSignIn} />}
-      {adminOpen && <AdminDashboard onClose={() => setAdminOpen(false)} />}
+      {adminOpen && <AdminDashboard onClose={closeAdmin} />}
       {signInError && <div className="toast-error" role="alert">{signInError}<button aria-label="Dismiss error" onClick={() => setSignInError("")}><X size={17} /></button></div>}
     </>
   );

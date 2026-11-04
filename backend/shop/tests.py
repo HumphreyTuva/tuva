@@ -44,6 +44,19 @@ class StorefrontApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["name"] for item in response.data], ["ProBook 14"])
 
+    @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:5173", "http://127.0.0.1:5173"])
+    def test_local_frontend_origins_can_preflight_product_creation(self):
+        for origin in ("http://localhost:5173", "http://127.0.0.1:5173"):
+            with self.subTest(origin=origin):
+                response = self.client.options(
+                    "/api/management/products/",
+                    HTTP_ORIGIN=origin,
+                    HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+                    HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization,content-type",
+                )
+
+                self.assertEqual(response["Access-Control-Allow-Origin"], origin)
+
     def test_products_support_offset_pagination(self):
         second_product = Product.objects.create(
             name="TravelMate 14",

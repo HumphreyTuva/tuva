@@ -1,6 +1,6 @@
 const DEFAULT_API = import.meta.env.PROD
-  ? "https://tuvacomputers.pythonanywhere.com/api"
-  : "https://tuvacomputers.pythonanywhere.com/api";
+  ? "http://127.0.0.1:8080/api"
+  : "http://127.0.0.1:8080/api";
 const configuredAPI = import.meta.env.VITE_API;
 const pointsAtThisComputer = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredAPI || "");
 const API = ((import.meta.env.PROD && pointsAtThisComputer ? "" : configuredAPI) || DEFAULT_API).replace(/\/$/, "");
@@ -26,6 +26,15 @@ async function req(path, opts = {}, authToken = tok()) {
   }
   return data;
 }
+function adminReq(path, opts, authToken) {
+  const staffToken = authToken || window.localStorage.getItem("tuva_admin_token");
+  if (!staffToken) {
+    const error = new Error("Your staff session has expired. Sign in again to manage products.");
+    error.status = 401;
+    throw error;
+  }
+  return req(path, opts, staffToken);
+}
 export const api = {
   products: (q = "", category = "", offset = 0, includeCount = false) => req(`/products/?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&offset=${encodeURIComponent(offset)}${includeCount ? "&include_count=true" : ""}`),
   product: (id) => req(`/products/${encodeURIComponent(id)}/`),
@@ -46,14 +55,14 @@ export const api = {
   chat: (conversation) => req(`/chat/?conversation=${encodeURIComponent(conversation)}`),
   sendChat: (conversation, message) => req("/chat/", { method: "POST", body: JSON.stringify({ conversation, message }) }),
   adminLogin: (username, password) => req("/management/login/", { method: "POST", body: JSON.stringify({ username, password }) }, ""),
-  adminDashboard: (token) => req("/management/dashboard/", {}, token),
-  adminProducts: (query, offset, token) => req(`/management/products/?q=${encodeURIComponent(query)}&offset=${encodeURIComponent(offset)}`, {}, token),
-  adminUpdateStock: (product, stock, token) => req(`/management/products/${product}/stock/`, { method: "PATCH", body: JSON.stringify({ stock }) }, token),
-  adminCreateProduct: (form, token) => req("/management/products/", { method: "POST", body: form }, token),
-  adminUpdateProduct: (product, form, token) => req(`/management/products/${product}/`, { method: "PATCH", body: form }, token),
-  adminUpdateProductImage: (product, image, file, token) => { const form = new FormData(); form.append("image", file); return req(`/management/products/${product}/images/${encodeURIComponent(image)}/`, { method: "PATCH", body: form }, token); },
-  adminDeleteProductImage: (product, image, token) => req(`/management/products/${product}/images/${encodeURIComponent(image)}/`, { method: "DELETE" }, token),
-  adminDeleteProduct: (product, token) => req(`/management/products/${product}/delete/`, { method: "DELETE" }, token),
-  adminConversation: (conversation, token) => req(`/management/conversations/${encodeURIComponent(conversation)}/`, {}, token),
-  adminReply: (conversation, message, token) => req(`/management/conversations/${encodeURIComponent(conversation)}/reply/`, { method: "POST", body: JSON.stringify({ message }) }, token),
+  adminDashboard: (token) => adminReq("/management/dashboard/", {}, token),
+  adminProducts: (query, offset, token) => adminReq(`/management/products/?q=${encodeURIComponent(query)}&offset=${encodeURIComponent(offset)}`, {}, token),
+  adminUpdateStock: (product, stock, token) => adminReq(`/management/products/${product}/stock/`, { method: "PATCH", body: JSON.stringify({ stock }) }, token),
+  adminCreateProduct: (form, token) => adminReq("/management/products/", { method: "POST", body: form }, token),
+  adminUpdateProduct: (product, form, token) => adminReq(`/management/products/${product}/`, { method: "PATCH", body: form }, token),
+  adminUpdateProductImage: (product, image, file, token) => { const form = new FormData(); form.append("image", file); return adminReq(`/management/products/${product}/images/${encodeURIComponent(image)}/`, { method: "PATCH", body: form }, token); },
+  adminDeleteProductImage: (product, image, token) => adminReq(`/management/products/${product}/images/${encodeURIComponent(image)}/`, { method: "DELETE" }, token),
+  adminDeleteProduct: (product, token) => adminReq(`/management/products/${product}/delete/`, { method: "DELETE" }, token),
+  adminConversation: (conversation, token) => adminReq(`/management/conversations/${encodeURIComponent(conversation)}/`, {}, token),
+  adminReply: (conversation, message, token) => adminReq(`/management/conversations/${encodeURIComponent(conversation)}/reply/`, { method: "POST", body: JSON.stringify({ message }) }, token),
 };

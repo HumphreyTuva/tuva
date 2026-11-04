@@ -31,8 +31,12 @@ class Product(models.Model):
     def save(self, *a, **k):
         super().save(*a, **k)
         if self.image and self.embedding is None:
-            from .imagesearch import embed
-            self.embedding = embed(self.image.path); super().save(update_fields=["embedding"])
+            try:
+                from .imagesearch import embed
+                self.embedding = embed(self.image.path)
+                super().save(update_fields=["embedding"])
+            except Exception:
+                pass
     def __str__(self): return self.name
 
     @property

@@ -1,7 +1,12 @@
 from django.contrib import admin
-from .models import ChatMessage, DeliveryZone, MpesaPayment, Order, OrderItem, Product, StockAlert, StockMovement
+from .models import ChatMessage, DeliveryZone, MpesaPayment, Order, OrderItem, Product, ProductImage, StockAlert, StockMovement
 
 admin.site.register([DeliveryZone, MpesaPayment, OrderItem, StockMovement])
+
+
+class ProductImageInline(admin.TabularInline):
+    model = ProductImage
+    extra = 1
 
 
 @admin.register(ChatMessage)
@@ -15,8 +20,9 @@ class ChatMessageAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ("name", "category", "display_price", "stock", "badge")
-    list_filter = ("category", "badge")
+    list_display = ("name", "category", "display_price", "stock", "is_active", "badge")
+    list_filter = ("is_active", "category", "badge")
+    inlines = [ProductImageInline]
     search_fields = ("name", "subtitle", "category")
 
     @admin.display(description="Price (Ksh)")

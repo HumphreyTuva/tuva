@@ -17,6 +17,7 @@ class ProductSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True,
     )
+    is_active = serializers.BooleanField(default=True)
 
     class Meta:
         model = Product

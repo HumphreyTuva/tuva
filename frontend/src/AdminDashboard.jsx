@@ -95,6 +95,7 @@ function ProductEditor({ product, saving, imageAction, onReplaceImage, onDeleteI
     subtitle: product?.subtitle || "",
     category: product?.category || "",
     price: product?.price || product?.price_min || "",
+    compare_price: product?.compare_price || "",
     stock: product ? String(product.stock ?? 0) : "",
     badge: product?.badge || "",
     specs: (product?.specs || []).join("\n"),
@@ -124,6 +125,11 @@ function ProductEditor({ product, saving, imageAction, onReplaceImage, onDeleteI
       setFormError("Enter a valid price greater than zero (up to two decimal places).");
       return;
     }
+    const comparePrice = values.compare_price === "" ? null : Number(values.compare_price);
+    if (comparePrice !== null && (!/^\d+(?:\.\d{1,2})?$/.test(values.compare_price) || !Number.isFinite(comparePrice) || comparePrice < price || comparePrice >= 100_000_000)) {
+      setFormError("Compare price must be blank or at least the selling price (up to two decimal places).");
+      return;
+    }
     const stock = values.stock === "" ? 0 : Number(values.stock);
     if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) {
       setFormError("Enter a whole-number stock quantity from 0 to 1,000,000.");
@@ -146,6 +152,7 @@ function ProductEditor({ product, saving, imageAction, onReplaceImage, onDeleteI
       <label>Category<input required maxLength={40} value={values.category} onChange={(event) => update("category", event.target.value)} /></label>
       {formError && <p className="admin-product-form-error" role="alert">{formError}</p>}
       <label>Price (KSh)<input required type="text" inputMode="decimal" placeholder="0" value={values.price} onChange={(event) => { update("price", event.target.value); setFormError(""); }} /></label>
+      <label>Compare price (optional)<input type="text" inputMode="decimal" placeholder="Leave blank for no sale price" value={values.compare_price} onChange={(event) => { update("compare_price", event.target.value); setFormError(""); }} /></label>
       <label>Stock<input type="text" inputMode="numeric" placeholder="0" value={values.stock} onChange={(event) => { update("stock", event.target.value); setFormError(""); }} /></label>
       <label>Badge<input maxLength={30} value={values.badge} onChange={(event) => update("badge", event.target.value)} /></label>
       <label className="admin-product-specs">Specifications <small>Enter one per line</small><textarea rows="3" value={values.specs} onChange={(event) => update("specs", event.target.value)} /></label>
@@ -282,7 +289,7 @@ export default function AdminDashboard({ onClose }) {
 
   useEffect(() => {
     const query = productQuery.trim();
-    if (!query) {
+    if (!token || !query) {
       setProductSearchResult(null);
       setProductSearchBusy(false);
       return undefined;
@@ -297,7 +304,14 @@ export default function AdminDashboard({ onClose }) {
           setProductSearchResult({ query, ...result });
         }
       } catch (requestError) {
-        if (active && requestId === productSearchRequest.current) setError(requestError.message);
+        if (active && requestId === productSearchRequest.current) {
+          setError(requestError.message);
+          if (requestError.status === 401 || requestError.status === 403) {
+            localStorage.removeItem("tuva_admin_token");
+            setToken("");
+            setDashboard(null);
+          }
+        }
       } finally {
         if (active && requestId === productSearchRequest.current) setProductSearchBusy(false);
       }
@@ -366,6 +380,11 @@ export default function AdminDashboard({ onClose }) {
       await refreshProductSearch();
     } catch (requestError) {
       setError(requestError.message);
+      if (requestError.status === 401 || requestError.status === 403) {
+        localStorage.removeItem("tuva_admin_token");
+        setToken("");
+        setDashboard(null);
+      }
     } finally {
       setStockSaving(null);
     }
@@ -375,11 +394,12 @@ export default function AdminDashboard({ onClose }) {
     setProductSaving(true);
     setError("");
     const form = new FormData();
-    ["name", "subtitle", "category", "price", "stock", "badge"].forEach((field) => {
+    ["name", "subtitle", "category", "price", "compare_price", "stock", "badge"].forEach((field) => {
       form.append(field, values[field]);
     });
     form.append("specs", JSON.stringify(values.specs.split("\n").map((spec) => spec.trim()).filter(Boolean)));
     values.images.forEach((image) => form.append("image_files", image));
+    form.append("is_active", "true");
     try {
       if (editingProduct?.id) await api.adminUpdateProduct(editingProduct.id, form, token);
       else await api.adminCreateProduct(form, token);
@@ -388,6 +408,11 @@ export default function AdminDashboard({ onClose }) {
       closeProductEditor();
     } catch (requestError) {
       setError(requestError.message);
+      if (requestError.status === 401 || requestError.status === 403) {
+        localStorage.removeItem("tuva_admin_token");
+        setToken("");
+        setDashboard(null);
+      }
     } finally {
       setProductSaving(false);
     }

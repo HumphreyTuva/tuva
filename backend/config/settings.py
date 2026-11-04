@@ -71,9 +71,16 @@ MEDIA_URL = env("MEDIA_URL", "/media/")
 MEDIA_ROOT = Path(env("MEDIA_ROOT", "") or BASE_DIR / "media")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in env("CORS_ALLOWED_ORIGINS", env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173")).split(",")
+    origin.strip() for origin in env(
+        "CORS_ALLOWED_ORIGINS",
+        env("FRONTEND_URL", "https://tuvacomputers.netlify.app,http://localhost:5173,http://127.0.0.1:5173"),
+    ).split(",")
     if origin.strip()
 ]
+if DEBUG:
+    for origin in ("http://localhost:5173", "http://127.0.0.1:5173"):
+        if origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(origin)
 CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication"],

@@ -14,6 +14,7 @@ class Product(models.Model):
     model = models.CharField(max_length=120, blank=True, db_index=True)
     sku = models.CharField(max_length=64, blank=True, db_index=True)
     aliases = models.JSONField(default=list, blank=True)
+    use_cases = models.JSONField(default=list, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     compare_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     specs = models.JSONField(default=list)

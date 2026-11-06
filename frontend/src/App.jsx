@@ -51,10 +51,10 @@ import {
 import { siWhatsapp } from "simple-icons";
 import { api } from "./api";
 import AdminDashboard from "./AdminDashboard";
+import { productUseCases } from "./productUseCases";
 
 const categories = [
-  { name: "Business", id: "business", icon: "briefcase", hint: "Reliable for work" },
-  { name: "Gaming", id: "gaming", icon: "gaming", hint: "High performance" },
+  ...productUseCases,
   { name: "Ultrabooks", id: "ultrabooks", icon: "laptop", hint: "Thin, light, powerful" },
   { name: "2-in-1 laptops", id: "2-in-1", icon: "tablet", hint: "Flexible productivity" },
   { name: "Accessories", id: "accessories", icon: "headphones", hint: "Make it complete" },
@@ -148,6 +148,11 @@ function ProductCard({ product, onAdd, onOpen }) {
         <p className="price">{money(product.price_min_kes)}</p>
         <p className="verified"><BadgeCheck size={12} aria-hidden="true" /> Verified supplier</p>
       </div>
+      {product.use_cases?.length > 0 && <div className="product-use-cases" aria-label="Suitable for">
+        {product.use_cases.map((useCase) => <span key={useCase}>
+          {productUseCases.find(({ id }) => id === useCase)?.name || useCase}
+        </span>)}
+      </div>}
       <div className="specs">{(product.specs || []).slice(0, 4).map((spec) => <span key={spec}>{spec}</span>)}</div>
       <div className="card-bottom">
         <span className={product.in_stock ? "stock-label" : "stock-label unavailable"}>
@@ -894,6 +899,7 @@ export default function App() {
   const skipProductEffect = useRef(false);
   const searchRequestId = useRef(0);
   const resultsSection = useRef(null);
+  const catalogResultsSection = useRef(null);
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
   const productFilters = {
     sort: sortOrder,
@@ -939,7 +945,7 @@ export default function App() {
     return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
   }, [chatOpen]);
 
-  const loadProducts = useCallback(async (search = query, selectedCategory = category, includeCount = catalogOpen) => {
+  const loadProducts = useCallback(async (search = query, selectedCategory = category, includeCount = catalogOpen, filters = productFilters) => {
     const requestId = ++searchRequestId.current;
     setImageSearchActive(false);
     setImageSearchBusy(false);
@@ -950,7 +956,7 @@ export default function App() {
     setError("");
     setProducts([]);
     try {
-      const response = await api.products(search, selectedCategory, 0, includeCount, productFilters);
+      const response = await api.products(search, selectedCategory, 0, includeCount, filters);
       if (requestId === searchRequestId.current) {
         const result = includeCount ? response.results : response;
         setProducts(result);
@@ -981,19 +987,19 @@ export default function App() {
       if (requestId === searchRequestId.current) setLoadingMore(false);
     }
   };
+  const scrollToResults = (section) => {
+    if (!section) return;
+    const header = document.querySelector(".site-header");
+    const stickyOffset = header && getComputedStyle(header).position === "sticky"
+      ? header.getBoundingClientRect().height + 12
+      : 12;
+    const top = section.getBoundingClientRect().top + window.scrollY - stickyOffset;
+    window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  };
   const searchAndScrollToResults = async () => {
     goHome();
     await loadProducts();
-    window.requestAnimationFrame(() => {
-      const section = resultsSection.current;
-      if (!section) return;
-      const header = document.querySelector(".site-header");
-      const stickyOffset = header && getComputedStyle(header).position === "sticky"
-        ? header.getBoundingClientRect().height + 12
-        : 12;
-      const top = section.getBoundingClientRect().top + window.scrollY - stickyOffset;
-      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-    });
+    window.requestAnimationFrame(() => scrollToResults(resultsSection.current));
   };
   useEffect(() => {
     if (skipProductEffect.current) {
@@ -1129,6 +1135,7 @@ export default function App() {
     setCategory(value);
     setImageSearchActive(false);
     if (sameFilter && imageSearchActive) loadProducts("", value);
+    window.requestAnimationFrame(() => scrollToResults(catalogResultsSection.current));
   };
   const clearCatalogFilters = () => {
     setQuery("");
@@ -1143,6 +1150,10 @@ export default function App() {
   const selectCategory = (value) => {
     if (selectedProductId) goHome();
     setCategory(value);
+    window.requestAnimationFrame(() => {
+      const target = catalogOpen ? catalogResultsSection.current : resultsSection.current;
+      scrollToResults(target);
+    });
   };
   const openCart = () => {
     setCartOpen(true);
@@ -1190,7 +1201,7 @@ export default function App() {
       </header>
       <nav className="desktop-nav" aria-label="Main navigation">
         <button onClick={openCatalog}><Icon name="menu" size={15} />All laptops</button>
-        {categories.slice(0, 4).map((item) => <button key={item.id} className={category === item.id ? "selected" : ""} aria-pressed={category === item.id} onClick={() => selectCategory(item.id)}>{item.name}</button>)}
+        {categories.filter((item) => item.id !== "accessories").map((item) => <button key={item.id} className={category === item.id ? "selected" : ""} aria-pressed={category === item.id} onClick={() => selectCategory(item.id)}>{item.name}</button>)}
         <button onClick={() => selectCategory("accessories")}>Accessories</button><button onClick={() => { goHome(); window.setTimeout(() => document.getElementById("products")?.scrollIntoView({ behavior: "smooth" }), 0); }}>Shop</button>
       </nav>
 
@@ -1247,6 +1258,7 @@ export default function App() {
           {(query || category || appliedMinPrice || appliedMaxPrice || inStockOnly || sortOrder !== "newest") &&
             <button className="catalog-filter-clear" type="button" onClick={clearCatalogFilters}>Clear filters</button>}
         </form>
+        <div ref={catalogResultsSection} className="catalog-results-anchor" />
         {error && <div className="error-banner" role="alert">{error}
           <button onClick={() => products.length && hasMoreProducts ? loadMoreProducts() : loadProducts()}>Try again</button>
         </div>}
@@ -1268,13 +1280,13 @@ export default function App() {
       </main> : <main className="storefront">
         <section className="hero-layout">
           <aside className="category-panel" aria-label="Shop by category">
-            {categories.map((item) => <button key={item.id} className="category-row" onClick={() => selectCategory(item.id)}>
+            {categories.slice(0, 5).map((item) => <button key={item.id} className="category-row" onClick={() => selectCategory(item.id)}>
               <span className="category-icon"><Icon name={item.icon} size={21} /></span><span className="category-copy"><strong>{item.name}</strong><small>{item.hint}</small></span><span className="category-arrow"><Icon name="chevronRight" size={16} /></span>
             </button>)}
             <button className="all-categories" onClick={() => selectCategory("")}>View all categories <Icon name="chevronRight" size={16} /></button>
           </aside>
           <div className="mobile-category-quick" id="mobile-categories" aria-label="Shop popular categories">
-            {[categories[0], categories[1], categories[2], categories[4]].map((item) => <button key={item.id} className={category === item.id ? "active" : ""} aria-pressed={category === item.id} onClick={() => selectCategory(item.id)}>
+            {categories.slice(0, 4).map((item) => <button key={item.id} className={category === item.id ? "active" : ""} aria-pressed={category === item.id} onClick={() => selectCategory(item.id)}>
               <span><Icon name={item.icon} size={28} /></span><strong>{item.name}</strong>
             </button>)}
           </div>
@@ -1301,7 +1313,18 @@ export default function App() {
             products.length ? <div className="product-grid">{products.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={openProduct} />)}</div> :
               !error && <div className="empty-results"><Search className="empty-search-icon" aria-hidden="true" size={30} strokeWidth={1.6} /><h3>No matching laptops just yet</h3><p>Try a different search or get notified when something becomes available.</p></div>}
           {!loading && !error && query && (!products.length || products.every((product) => !product.in_stock)) && <AvailabilityAlert query={query} userEmail={userEmail} />}
-          {!loading && !error && !products.length && !query && <button className="btn retry-button" onClick={() => loadProducts()}>Reload laptops</button>}
+          {!loading && !error && !products.length && !query && <button className="btn retry-button" onClick={() => {
+            setQuery("");
+            setCategory("");
+            setSortOrder("newest");
+            setMinPrice("");
+            setMaxPrice("");
+            setAppliedMinPrice("");
+            setAppliedMaxPrice("");
+            setInStockOnly(false);
+            setImageSearchActive(false);
+            loadProducts("", "", false, { sort: "newest", minPrice: "", maxPrice: "", inStock: false });
+          }}>Reload laptops</button>}
         </section>
 
       </main>}

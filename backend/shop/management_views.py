@@ -141,6 +141,7 @@ def admin_products(request):
                 Q(name__icontains=query)
                 | Q(subtitle__icontains=query)
                 | Q(category__icontains=query)
+                | Q(use_cases__icontains=query)
                 | Q(brand__icontains=query)
                 | Q(model__icontains=query)
                 | Q(sku__icontains=query)

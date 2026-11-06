@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api";
+import { productUseCases } from "./productUseCases";
 
 const money = (value) => `KSh ${Number(value || 0).toLocaleString("en-KE", { maximumFractionDigits: 0 })}`;
 const date = (value) => new Date(value).toLocaleString(undefined, {
@@ -94,6 +95,7 @@ function ProductEditor({ product, saving, imageAction, onReplaceImage, onDeleteI
     name: product?.name || "",
     subtitle: product?.subtitle || "",
     category: product?.category || "",
+    use_cases: product?.use_cases || [],
     price: product?.price || product?.price_min || "",
     compare_price: product?.compare_price || "",
     stock: product ? String(product.stock ?? 0) : "",
@@ -150,6 +152,16 @@ function ProductEditor({ product, saving, imageAction, onReplaceImage, onDeleteI
       <label>Product name<input required maxLength={120} value={values.name} onChange={(event) => update("name", event.target.value)} /></label>
       <label>Subtitle<input maxLength={120} value={values.subtitle} onChange={(event) => update("subtitle", event.target.value)} /></label>
       <label>Category<input required maxLength={40} value={values.category} onChange={(event) => update("category", event.target.value)} /></label>
+      <fieldset className="admin-product-use-cases">
+        <legend>Suitable for <small>Select all that apply</small></legend>
+        {productUseCases.map(({ id, name }) => <label key={id}>
+          <input type="checkbox" checked={values.use_cases.includes(id)}
+            onChange={(event) => update("use_cases", event.target.checked
+              ? [...values.use_cases, id]
+              : values.use_cases.filter((useCase) => useCase !== id))} />
+          {name}
+        </label>)}
+      </fieldset>
       {formError && <p className="admin-product-form-error" role="alert">{formError}</p>}
       <label>Price (KSh)<input required type="text" inputMode="decimal" placeholder="0" value={values.price} onChange={(event) => { update("price", event.target.value); setFormError(""); }} /></label>
       <label>Compare price (optional)<input type="text" inputMode="decimal" placeholder="Leave blank for no sale price" value={values.compare_price} onChange={(event) => { update("compare_price", event.target.value); setFormError(""); }} /></label>
@@ -397,6 +409,7 @@ export default function AdminDashboard({ onClose }) {
     ["name", "subtitle", "category", "price", "compare_price", "stock", "badge"].forEach((field) => {
       form.append(field, values[field]);
     });
+    form.append("use_cases", JSON.stringify(values.use_cases));
     form.append("specs", JSON.stringify(values.specs.split("\n").map((spec) => spec.trim()).filter(Boolean)));
     values.images.forEach((image) => form.append("image_files", image));
     form.append("is_active", "true");

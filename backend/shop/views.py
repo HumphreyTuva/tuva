@@ -73,9 +73,14 @@ def products(request):
         return Response({"error": "Offset must be a non-negative integer."}, status=400)
     queryset = Product.objects.filter(is_active=True).prefetch_related("gallery_images")
     if query:
-        queryset = queryset.filter(Q(name__icontains=query) | Q(subtitle__icontains=query) | Q(category__icontains=query))
+        queryset = queryset.filter(
+            Q(name__icontains=query)
+            | Q(subtitle__icontains=query)
+            | Q(category__icontains=query)
+            | Q(use_cases__icontains=query)
+        )
     if category:
-        queryset = queryset.filter(category__iexact=category)
+        queryset = queryset.filter(Q(category__iexact=category) | Q(use_cases__icontains=category))
     price_filters = {}
     for parameter, lookup in (("min_price", "price__gte"), ("max_price", "price__lte")):
         value = request.GET.get(parameter, "").strip()

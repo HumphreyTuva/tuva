@@ -19,6 +19,7 @@ from rest_framework.test import APITestCase
 
 from .imagesearch import embed
 from .models import ChatMessage, DeliveryZone, DiscountCode, MpesaPayment, Order, Product, ProductImage, StockAlert, StockMovement
+from .serializers import ProductSerializer
 from . import mpesa
 from .mpesa import normalize
 from .tasks import branded
@@ -43,6 +44,31 @@ class StorefrontApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["name"] for item in response.data], ["ProBook 14"])
+
+    def test_product_use_cases_can_overlap_and_filter_by_use_case(self):
+        self.product.use_cases = ["business", "programming", "students"]
+        self.product.save(update_fields=["use_cases"])
+
+        response = self.client.get("/api/products/", {"category": "programming"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in response.data], [self.product.pk])
+        self.assertEqual(response.data[0]["use_cases"], ["business", "programming", "students"])
+
+    def test_product_serializer_accepts_use_cases_from_admin_form(self):
+        serializer = ProductSerializer(
+            self.product,
+            data={
+                "use_cases": '["business","programming"]',
+                "price": "679.00",
+                "compare_price": "799.00",
+            },
+            partial=True,
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.use_cases, ["business", "programming"])
 
     @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:5173", "http://127.0.0.1:5173"])
     def test_local_frontend_origins_can_preflight_product_creation(self):

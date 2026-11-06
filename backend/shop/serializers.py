@@ -1,6 +1,28 @@
+import json
+
 from rest_framework import serializers
 from . import mpesa
 from .models import Product, ProductImage
+
+
+PRODUCT_USE_CASE_IDS = (
+    "business",
+    "gaming",
+    "programming",
+    "students",
+    "creative-work",
+    "travel",
+)
+
+
+class UseCaseListField(serializers.ListField):
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError as error:
+                raise serializers.ValidationError("Use cases must be a JSON list.") from error
+        return super().to_internal_value(data)
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -10,6 +32,10 @@ class ProductSerializer(serializers.ModelSerializer):
     price_max = serializers.DecimalField(source="compare_price", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
     price_min_kes = serializers.SerializerMethodField()
     price_max_kes = serializers.SerializerMethodField()
+    use_cases = UseCaseListField(
+        child=serializers.ChoiceField(choices=PRODUCT_USE_CASE_IDS),
+        required=False,
+    )
     images = serializers.SerializerMethodField()
     image_items = serializers.SerializerMethodField()
     image_files = serializers.ListField(
@@ -22,7 +48,7 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = [
-            "id", "name", "subtitle", "category", "price", "compare_price", "price_min", "price_max",
+            "id", "name", "subtitle", "category", "use_cases", "price", "compare_price", "price_min", "price_max",
             "price_min_kes", "price_max_kes", "specs", "image", "images", "image_items", "image_files",
             "stock", "in_stock", "badge", "is_active",
         ]

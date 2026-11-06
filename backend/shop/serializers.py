@@ -16,6 +16,17 @@ PRODUCT_USE_CASE_IDS = (
 
 
 class UseCaseListField(serializers.ListField):
+    def get_value(self, dictionary):
+        data = super().get_value(dictionary)
+        if isinstance(data, list) and len(data) == 1 and isinstance(data[0], str):
+            try:
+                parsed_data = json.loads(data[0])
+            except json.JSONDecodeError:
+                return data
+            if isinstance(parsed_data, list):
+                return parsed_data
+        return data
+
     def to_internal_value(self, data):
         if isinstance(data, str):
             try:

@@ -70,6 +70,51 @@ class StorefrontApiTests(APITestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.use_cases, ["business", "programming"])
 
+    def test_staff_can_update_use_cases_from_multipart_and_json(self):
+        staff = get_user_model().objects.create_user(username="use-case-manager", is_staff=True)
+        self.client.force_authenticate(user=staff)
+        url = f"/api/management/products/{self.product.pk}/"
+
+        empty_list = self.client.patch(url, {"use_cases": "[]"}, format="multipart", secure=True)
+        self.assertEqual(empty_list.status_code, 200)
+        self.assertEqual(empty_list.data["use_cases"], [])
+
+        one_use_case = self.client.patch(
+            url,
+            {"use_cases": '["business"]'},
+            format="multipart",
+            secure=True,
+        )
+        self.assertEqual(one_use_case.status_code, 200)
+        self.assertEqual(one_use_case.data["use_cases"], ["business"])
+
+        repeated_use_cases = self.client.patch(
+            url,
+            {"use_cases": ["business", "gaming"]},
+            format="multipart",
+            secure=True,
+        )
+        self.assertEqual(repeated_use_cases.status_code, 200)
+        self.assertEqual(repeated_use_cases.data["use_cases"], ["business", "gaming"])
+
+        json_list = self.client.patch(
+            url,
+            {"use_cases": ["programming", "students"]},
+            format="json",
+            secure=True,
+        )
+        self.assertEqual(json_list.status_code, 200)
+        self.assertEqual(json_list.data["use_cases"], ["programming", "students"])
+
+        invalid_choice = self.client.patch(
+            url,
+            {"use_cases": "not-a-use-case"},
+            format="multipart",
+            secure=True,
+        )
+        self.assertEqual(invalid_choice.status_code, 400)
+        self.assertIn("use_cases", invalid_choice.data)
+
     @override_settings(CORS_ALLOWED_ORIGINS=["http://localhost:5173", "http://127.0.0.1:5173"])
     def test_local_frontend_origins_can_preflight_product_creation(self):
         for origin in ("http://localhost:5173", "http://127.0.0.1:5173"):

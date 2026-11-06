@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
 
 from .imagesearch import embed
+from .imageopt import optimize_upload
 from .models import ChatMessage, Order, Product, ProductImage, StockAlert
 from .serializers import ProductSerializer
 from .views import serialize_products
@@ -191,8 +192,9 @@ def admin_manage_product_image(request, pk, image_id):
         uploaded_image.seek(0)
         embedding = embed(uploaded_image) if image_id == "primary" else None
         uploaded_image.seek(0)
+        stored_image = optimize_upload(uploaded_image, uploaded_image.name) or uploaded_image
         previous_name = image.name
-        image.save(uploaded_image.name, uploaded_image, save=False)
+        image.save(stored_image.name, stored_image, save=False)
         if gallery_image:
             gallery_image.save(update_fields=["image"])
         else:

@@ -4,6 +4,16 @@ from django.utils.crypto import get_random_string
 import uuid
 
 
+def optimize_pending_image(instance):
+    """Resize/convert a freshly uploaded (not yet stored) image to WebP before saving."""
+    from .imageopt import optimize_upload
+    image = instance.image
+    if image and not image._committed:
+        optimized = optimize_upload(image.file, image.name)
+        if optimized is not None:
+            instance.image = optimized
+
+
 def new_order_reference():
     return f"TV-{get_random_string(10).upper()}"
 class Product(models.Model):
@@ -30,6 +40,7 @@ class Product(models.Model):
     @property
     def price_max(self): return self.compare_price if self.compare_price is not None else self.price
     def save(self, *a, **k):
+        optimize_pending_image(self)
         super().save(*a, **k)
         if self.image and self.embedding is None:
             try:
@@ -52,6 +63,10 @@ class ProductImage(models.Model):
 
     class Meta:
         ordering = ["id"]
+
+    def save(self, *a, **k):
+        optimize_pending_image(self)
+        super().save(*a, **k)
 class StockAlert(models.Model):
     email = models.EmailField(); query = models.CharField(max_length=200)
     product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.CASCADE)

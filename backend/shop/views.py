@@ -10,7 +10,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Case, F, IntegerField, Q, Value, When
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -62,17 +62,50 @@ def serialize_products(queryset, request):
 def products(request):
     query = request.GET.get("q", "").strip()[:120]
     category = request.GET.get("category", "").strip()[:40]
+    sort_order = request.GET.get("sort", "newest")
+    if sort_order not in ("newest", "price_asc", "price_desc"):
+        return Response({"error": "Choose a valid product sort order."}, status=400)
     try:
         offset = int(request.GET.get("offset", "0"))
     except ValueError:
         return Response({"error": "Offset must be a non-negative integer."}, status=400)
     if offset < 0:
         return Response({"error": "Offset must be a non-negative integer."}, status=400)
-    queryset = Product.objects.filter(is_active=True).prefetch_related("gallery_images").order_by("id")
+    queryset = Product.objects.filter(is_active=True).prefetch_related("gallery_images")
     if query:
         queryset = queryset.filter(Q(name__icontains=query) | Q(subtitle__icontains=query) | Q(category__icontains=query))
     if category:
         queryset = queryset.filter(category__iexact=category)
+    price_filters = {}
+    for parameter, lookup in (("min_price", "price__gte"), ("max_price", "price__lte")):
+        value = request.GET.get(parameter, "").strip()
+        if value:
+            try:
+                amount = Decimal(value)
+                if not amount.is_finite() or amount < 0:
+                    raise ValueError
+            except (ArithmeticError, ValueError):
+                return Response({"error": f"{parameter.replace('_', ' ').capitalize()} must be a non-negative number."}, status=400)
+            price_filters[lookup] = amount
+    if "price__gte" in price_filters and "price__lte" in price_filters and price_filters["price__gte"] > price_filters["price__lte"]:
+        return Response({"error": "Minimum price cannot be greater than maximum price."}, status=400)
+    if price_filters:
+        queryset = queryset.filter(**price_filters)
+    if request.GET.get("in_stock") == "true":
+        queryset = queryset.filter(stock__gt=F("reserved"))
+    price_order = {
+        "newest": ("-id",),
+        "price_asc": ("price", "-id"),
+        "price_desc": ("-price", "-id"),
+    }[sort_order]
+    queryset = queryset.order_by(
+        Case(
+            When(stock__gt=F("reserved"), then=Value(0)),
+            default=Value(1),
+            output_field=IntegerField(),
+        ),
+        *price_order,
+    )
     if request.GET.get("include_count") == "true":
         return Response({
             "count": queryset.count(),

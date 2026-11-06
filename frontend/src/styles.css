@@ -241,6 +241,14 @@ a { color: inherit; }
 .catalog-categories button { display: inline-flex; min-height: 40px; flex: 0 0 auto; align-items: center; justify-content: center; gap: 7px; border: 1px solid #eae5e0; border-radius: 22px; background: #fff; padding: 8px 15px; color: #554e48; font-size: 11px; font-weight: 700; transition: border-color .16s ease, background .16s ease, color .16s ease; }
 .catalog-categories button:hover { border-color: #efb18f; color: #b84d1c; }
 .catalog-categories button.selected { border-color: #c94f12; background: #c94f12; color: #fff; }
+.catalog-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: -4px 0 20px; border: 1px solid #eee8e2; border-radius: 12px; background: #fff; padding: 13px; }
+.catalog-filter-field { display: grid; min-width: 135px; gap: 5px; color: #6d625a; font-size: 10px; font-weight: 700; }
+.catalog-filter-field select, .catalog-filter-field input { width: 100%; min-height: 38px; border: 1px solid #e8e2dc; border-radius: 7px; background: #fff; padding: 7px 9px; color: #312a25; font: inherit; font-size: 11px; }
+.catalog-filter-field input { max-width: 150px; }
+.catalog-filter-apply { min-height: 38px; border: 0; border-radius: 7px; background: #c94f12; padding: 0 14px; color: #fff; font-size: 11px; font-weight: 700; }
+.catalog-stock-filter { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; color: #514941; font-size: 11px; font-weight: 700; }
+.catalog-stock-filter input { accent-color: #c94f12; }
+.catalog-filter-clear { min-height: 38px; border: 0; background: transparent; padding: 0 8px; color: #a4491b; font-size: 11px; font-weight: 700; }
 .catalog-product-grid { row-gap: 16px; }
 .catalog-load-more { display: grid; justify-items: center; gap: 12px; margin: 30px 0 10px; color: #77716c; font-size: 11px; }
 .catalog-load-more .btn { display: inline-flex; min-width: 190px; min-height: 44px; align-items: center; justify-content: center; gap: 8px; font-size: 12px; }
@@ -853,6 +861,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .catalog-result-count strong { font-size: 18px; }
   .catalog-categories { gap: 6px; margin: 12px 0 16px; }
   .catalog-categories button { min-height: 36px; gap: 5px; padding: 7px 12px; font-size: 10px; }
+  .catalog-filters { gap: 8px; padding: 10px; }
+  .catalog-filter-field { min-width: calc(50% - 4px); flex: 1; }
+  .catalog-filter-field input { max-width: none; }
+  .catalog-stock-filter { flex: 1; }
   .catalog-product-grid { gap: 10px; }
   .catalog-load-more { margin-top: 22px; }
   .catalog-load-more .btn { width: min(100%, 260px); }

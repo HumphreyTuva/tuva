@@ -70,8 +70,8 @@ class StorefrontApiTests(APITestCase):
         next_page = self.client.get("/api/products/", {"offset": 1})
 
         self.assertEqual(first_page.status_code, 200)
-        self.assertEqual([item["id"] for item in first_page.data], [self.product.pk, second_product.pk])
-        self.assertEqual([item["id"] for item in next_page.data], [second_product.pk])
+        self.assertEqual([item["id"] for item in first_page.data], [second_product.pk, self.product.pk])
+        self.assertEqual([item["id"] for item in next_page.data], [self.product.pk])
         self.assertEqual(self.client.get("/api/products/", {"offset": -1}).status_code, 400)
         self.assertEqual(self.client.get("/api/products/", {"offset": "invalid"}).status_code, 400)
 
@@ -95,7 +95,33 @@ class StorefrontApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 2)
-        self.assertEqual([item["id"] for item in response.data["results"]], [self.product.pk, second_product.pk])
+        self.assertEqual([item["id"] for item in response.data["results"]], [second_product.pk, self.product.pk])
+
+    def test_product_filters_sort_by_price_and_keep_out_of_stock_last(self):
+        cheaper = Product.objects.create(
+            name="TravelMate 14",
+            subtitle="Business laptop",
+            category="business",
+            price="500.00",
+            stock=2,
+        )
+        out_of_stock = Product.objects.create(
+            name="Out of stock laptop",
+            subtitle="Business laptop",
+            category="business",
+            price="300.00",
+            stock=0,
+        )
+
+        response = self.client.get("/api/products/", {"sort": "price_asc", "min_price": "400"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in response.data], [cheaper.pk, self.product.pk])
+
+        response = self.client.get("/api/products/", {"sort": "price_desc"})
+        self.assertEqual([item["id"] for item in response.data], [self.product.pk, cheaper.pk, out_of_stock.pk])
+
+        response = self.client.get("/api/products/", {"in_stock": "true"})
+        self.assertEqual([item["id"] for item in response.data], [cheaper.pk, self.product.pk])
 
     def test_product_detail_returns_product_and_hides_archived_products(self):
         response = self.client.get(f"/api/products/{self.product.pk}/")

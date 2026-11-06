@@ -860,6 +860,12 @@ export default function App() {
   const [adminOpen, setAdminOpen] = useState(isAdminPath);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
+  const [sortOrder, setSortOrder] = useState("newest");
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [appliedMinPrice, setAppliedMinPrice] = useState("");
+  const [appliedMaxPrice, setAppliedMaxPrice] = useState("");
+  const [inStockOnly, setInStockOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMoreProducts, setHasMoreProducts] = useState(false);
@@ -889,6 +895,12 @@ export default function App() {
   const searchRequestId = useRef(0);
   const resultsSection = useRef(null);
   const cartCount = cart.reduce((total, item) => total + item.quantity, 0);
+  const productFilters = {
+    sort: sortOrder,
+    minPrice: appliedMinPrice,
+    maxPrice: appliedMaxPrice,
+    inStock: inStockOnly,
+  };
 
   useEffect(() => {
     const handlePopState = () => {
@@ -938,7 +950,7 @@ export default function App() {
     setError("");
     setProducts([]);
     try {
-      const response = await api.products(search, selectedCategory, 0, includeCount);
+      const response = await api.products(search, selectedCategory, 0, includeCount, productFilters);
       if (requestId === searchRequestId.current) {
         const result = includeCount ? response.results : response;
         setProducts(result);
@@ -950,14 +962,14 @@ export default function App() {
     } finally {
       if (requestId === searchRequestId.current) setLoading(false);
     }
-  }, [catalogOpen, category, query]);
+  }, [catalogOpen, category, query, sortOrder, appliedMinPrice, appliedMaxPrice, inStockOnly]);
   const loadMoreProducts = async () => {
     if (loading || loadingMore || !hasMoreProducts) return;
     const requestId = searchRequestId.current;
     setLoadingMore(true);
     setError("");
     try {
-      const response = await api.products(query, category, products.length, true);
+      const response = await api.products(query, category, products.length, true, productFilters);
       if (requestId === searchRequestId.current) {
         setProducts((current) => [...current, ...response.results]);
         setTotalProductCount(response.count);
@@ -1118,6 +1130,16 @@ export default function App() {
     setImageSearchActive(false);
     if (sameFilter && imageSearchActive) loadProducts("", value);
   };
+  const clearCatalogFilters = () => {
+    setQuery("");
+    setCategory("");
+    setSortOrder("newest");
+    setMinPrice("");
+    setMaxPrice("");
+    setAppliedMinPrice("");
+    setAppliedMaxPrice("");
+    setInStockOnly(false);
+  };
   const selectCategory = (value) => {
     if (selectedProductId) goHome();
     setCategory(value);
@@ -1199,6 +1221,32 @@ export default function App() {
             <Icon name={item.icon} size={15} />{item.name}
           </button>)}
         </nav>
+        <form className="catalog-filters" onSubmit={(event) => {
+          event.preventDefault();
+          setAppliedMinPrice(minPrice);
+          setAppliedMaxPrice(maxPrice);
+        }}>
+          <label className="catalog-filter-field">Sort by
+            <select aria-label="Sort products" value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}>
+              <option value="newest">Newest arrivals</option>
+              <option value="price_asc">Price: low to high</option>
+              <option value="price_desc">Price: high to low</option>
+            </select>
+          </label>
+          <label className="catalog-filter-field">Min price (KSh)
+            <input aria-label="Minimum price in KSh" type="number" min="0" step="1" value={minPrice} onChange={(event) => setMinPrice(event.target.value)} placeholder="Any" />
+          </label>
+          <label className="catalog-filter-field">Max price (KSh)
+            <input aria-label="Maximum price in KSh" type="number" min="0" step="1" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value)} placeholder="Any" />
+          </label>
+          <button className="catalog-filter-apply" type="submit">Apply price</button>
+          <label className="catalog-stock-filter">
+            <input type="checkbox" checked={inStockOnly} onChange={(event) => setInStockOnly(event.target.checked)} />
+            In stock only
+          </label>
+          {(query || category || appliedMinPrice || appliedMaxPrice || inStockOnly || sortOrder !== "newest") &&
+            <button className="catalog-filter-clear" type="button" onClick={clearCatalogFilters}>Clear filters</button>}
+        </form>
         {error && <div className="error-banner" role="alert">{error}
           <button onClick={() => products.length && hasMoreProducts ? loadMoreProducts() : loadProducts()}>Try again</button>
         </div>}
@@ -1209,7 +1257,7 @@ export default function App() {
         </div> : !error && <div className="empty-results">
           <Search className="empty-search-icon" aria-hidden="true" size={30} strokeWidth={1.6} />
           <h3>No products found</h3><p>Try a different search or category to explore our collection.</p>
-          {(query || category) && <button className="btn" onClick={() => { setQuery(""); setCategory(""); }}>Clear filters</button>}
+          {(query || category || appliedMinPrice || appliedMaxPrice || inStockOnly || sortOrder !== "newest") && <button className="btn" onClick={clearCatalogFilters}>Clear filters</button>}
         </div>}
         {!loading && products.length > 0 && hasMoreProducts && <div className="catalog-load-more">
           <span>Showing {products.length} of {totalProductCount} products</span>

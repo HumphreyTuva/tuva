@@ -6,7 +6,8 @@ TUVA is a React/Vite storefront backed by Django REST Framework. Product prices 
 
 1. Copy `backend/.env.example` to `backend/.env` and set a unique `SECRET_KEY`. Add the Google, Daraja, Anthropic, and SMTP settings you intend to use. Never commit `.env`.
 2. Set `MPESA_ENV=sandbox` for testing, and configure a public HTTPS `MPESA_CALLBACK_URL`.
-3. From `backend`, install dependencies and initialize the database:
+3. For the shopping assistant, add either `GEMINI_API_KEY`/`GEMINI_MODEL` or the legacy `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` in `backend/.env`; Gemini automatically tries `GEMINI_FALLBACK_MODEL` (default `gemini-3.5-flash-lite`) if its primary model is temporarily overloaded, without waiting through repeated retries. Restart the backend after changing settings.
+4. From `backend`, install dependencies and initialize the database:
 
    ```powershell
    .\venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -34,6 +35,7 @@ TUVA is a React/Vite storefront backed by Django REST Framework. Product prices 
 ## Operations
 
 - Google sign-in requires the same OAuth client ID in `GOOGLE_CLIENT_ID` (backend token verification) and `VITE_GOOGLE_CLIENT_ID` (frontend button).
+- The AI shopping assistant supports Gemini via `GEMINI_API_KEY` and falls back to Anthropic if needed; restart the backend after setting any provider key.
 - Set Daraja consumer credentials, shortcode, Till, passkey, and the callback URL in the backend environment. Do not expose Daraja credentials in frontend variables.
 - Configure SMTP and Redis in production. Without SMTP, email uses Django's console backend; queued email and restock alerts require a running Celery worker.
 - Customer support messages are stored in the database. Staff can review conversations and reply by adding a `Support` message with the same conversation UUID in Django admin.

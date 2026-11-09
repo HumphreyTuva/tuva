@@ -1,4 +1,5 @@
 import hmac
+import logging
 import os
 from datetime import timedelta
 from decimal import Decimal
@@ -29,6 +30,9 @@ from .imagesearch import embed, similar
 from .models import AvailabilityRequest, ChatMessage, DeliveryZone, MpesaPayment, Order, OrderItem, Product, StockAlert
 from .serializers import ProductSerializer
 from .tasks import branded, send_html
+
+
+logger = logging.getLogger(__name__)
 
 
 class UserOrIpRateThrottle(SimpleRateThrottle):
@@ -725,12 +729,20 @@ def order_status(request, pk):
     return Response({"status": order.status, "payment_status": order.payment_status, "receipt": order.receipt, "feedback": feedback})
 
 
+def _get_ai_provider_and_key():
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if gemini_key:
+        return "gemini", gemini_key, os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        return "anthropic", anthropic_key, os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    return None, None, None
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 @throttle_classes([AssistantRateThrottle])
 def assistant(request):
-    import anthropic
-
     supplied_messages = request.data.get("messages")
     if not isinstance(supplied_messages, list):
         return Response({"error": "Send a list of chat messages."}, status=400)
@@ -744,6 +756,12 @@ def assistant(request):
     ]
     if not messages or messages[-1]["role"] != "user":
         return Response({"error": "Send a message to the shopping assistant."}, status=400)
+
+    provider, api_key, model_name = _get_ai_provider_and_key()
+    if not provider:
+        logger.error("Shopping assistant is unavailable because no AI API key is configured.")
+        return Response({"error": "The shopping assistant is not configured. Please contact support."}, status=503)
+
     products = Product.objects.filter(is_active=True, stock__gt=0).order_by("id")[:60]
     catalog = []
     for product in products:
@@ -754,20 +772,91 @@ def assistant(request):
             f"{', '.join(product.specs)}, {'in stock' if product.available_stock else 'OUT OF STOCK'}"
         )
     catalog = "\n".join(catalog)
+    system_prompt = (
+        "You are TUVA's laptop shopping assistant. Recommend and compare only items in this catalog; "
+        "quote prices in Kenyan shillings (KSh), be concise and honest, and suggest a stock alert "
+        "for unavailable products.\n"
+        f"{catalog}"
+    )
+
+    if provider == "gemini":
+        try:
+            try:
+                from google import genai
+                from google.genai import errors as genai_errors
+                from google.genai import types
+
+                client = genai.Client(
+                    api_key=api_key,
+                    http_options=types.HttpOptions(
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    ),
+                )
+                prompt = "\n".join(
+                    f"{message['role'].capitalize()}: {message['content']}" for message in messages
+                )
+                fallback_model = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+                models = [model_name]
+                if fallback_model and fallback_model != model_name:
+                    models.append(fallback_model)
+                for index, candidate_model in enumerate(models):
+                    try:
+                        response = client.models.generate_content(
+                            model=candidate_model,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(system_instruction=system_prompt),
+                        )
+                        break
+                    except genai_errors.APIError as error:
+                        if getattr(error, "code", None) not in (429, 500, 502, 503, 504) or index == len(models) - 1:
+                            raise
+                        logger.warning(
+                            "Gemini model %s is temporarily unavailable; retrying with fallback model %s.",
+                            candidate_model,
+                            models[index + 1],
+                        )
+            except ImportError:
+                import google.generativeai as genai
+
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel(model_name=model_name, system_instruction=system_prompt)
+                prompt = "\n".join(
+                    f"{message['role'].capitalize()}: {message['content']}" for message in messages
+                )
+                response = model.generate_content(prompt)
+
+            reply = getattr(response, "text", None)
+            if not reply:
+                candidates = getattr(response, "candidates", None)
+                if candidates and getattr(candidates[0], "content", None):
+                    parts = getattr(candidates[0].content, "parts", None)
+                    if parts:
+                        reply = getattr(parts[0], "text", None)
+            if not reply:
+                raise ValueError("Gemini returned no response text.")
+            return Response({"reply": reply})
+        except ImportError:
+            logger.exception("The Gemini SDK is unavailable for the shopping assistant.")
+            return Response({"error": "The shopping assistant is temporarily unavailable. Please try again."}, status=503)
+        except Exception:
+            logger.exception("The Gemini API request failed for the shopping assistant.")
+            return Response({"error": "The shopping assistant is temporarily unavailable. Please try again."}, status=503)
+
     try:
-        client = anthropic.Anthropic()
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            model=model_name,
             max_tokens=700,
-            system=(
-                "You are TUVA's laptop shopping assistant. Recommend and compare only items in this catalog; "
-                "quote prices in Kenyan shillings (KSh), be concise and honest, and suggest a stock alert "
-                "for unavailable products.\n"
-                f"{catalog}"
-            ),
+            system=system_prompt,
             messages=messages,
         )
-    except (anthropic.APIConnectionError, anthropic.APIStatusError):
+    except ImportError:
+        logger.exception("The Anthropic SDK is unavailable for the shopping assistant.")
+        return Response({"error": "The shopping assistant is temporarily unavailable. Please try again."}, status=503)
+    except anthropic.AnthropicError:
+        logger.exception("The Anthropic API request failed for the shopping assistant.")
         return Response({"error": "The shopping assistant is temporarily unavailable. Please try again."}, status=503)
     return Response({"reply": response.content[0].text})
 

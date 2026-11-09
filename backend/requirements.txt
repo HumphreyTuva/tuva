@@ -2,6 +2,7 @@ Django>=5.0
 djangorestframework
 django-cors-headers
 google-auth
+google-genai
 requests
 Pillow
 numpy

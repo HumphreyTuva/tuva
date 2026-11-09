@@ -4,6 +4,7 @@ from io import StringIO
 import os
 import tempfile
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -203,6 +204,69 @@ class StorefrontApiTests(APITestCase):
         self.product.is_active = False
         self.product.save(update_fields=["is_active"])
         self.assertEqual(self.client.get(f"/api/products/{self.product.pk}/").status_code, 404)
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "", "ANTHROPIC_API_KEY": ""})
+    def test_assistant_reports_missing_ai_configuration(self):
+        response = self.client.post(
+            "/api/assistant/",
+            {"messages": [{"role": "user", "content": "Help me choose a laptop"}]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.data["error"],
+            "The shopping assistant is not configured. Please contact support.",
+        )
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-gemini-key", "ANTHROPIC_API_KEY": ""})
+    @patch("google.genai.Client")
+    def test_assistant_uses_gemini_when_configured(self, gemini_client):
+        gemini_client.return_value.models.generate_content.return_value.text = "Try the ProBook 14."
+
+        response = self.client.post(
+            "/api/assistant/",
+            {"messages": [{"role": "user", "content": "Help me choose a laptop"}]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"reply": "Try the ProBook 14."})
+        self.assertEqual(gemini_client.call_args.kwargs["api_key"], "test-gemini-key")
+        self.assertEqual(
+            gemini_client.call_args.kwargs["http_options"].retry_options.attempts,
+            1,
+        )
+        gemini_client.return_value.models.generate_content.assert_called_once()
+
+    @patch.dict(os.environ, {
+        "GEMINI_API_KEY": "test-gemini-key",
+        "GEMINI_MODEL": "primary-model",
+        "GEMINI_FALLBACK_MODEL": "fallback-model",
+        "ANTHROPIC_API_KEY": "",
+    })
+    @patch("google.genai.Client")
+    def test_assistant_falls_back_when_gemini_is_overloaded(self, gemini_client):
+        from google.genai.errors import ServerError
+
+        generate_content = gemini_client.return_value.models.generate_content
+        generate_content.side_effect = [
+            ServerError(503, {"error": {"message": "Model overloaded"}}),
+            SimpleNamespace(text="Try the ProBook 14."),
+        ]
+
+        response = self.client.post(
+            "/api/assistant/",
+            {"messages": [{"role": "user", "content": "Help me choose a laptop"}]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"reply": "Try the ProBook 14."})
+        self.assertEqual(
+            [call.kwargs["model"] for call in generate_content.call_args_list],
+            ["primary-model", "fallback-model"],
+        )
 
     def test_product_prices_are_kes_values(self):
         response = self.client.get("/api/products/")

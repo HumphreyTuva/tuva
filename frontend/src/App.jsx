@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import { GoogleLogin } from "@react-oauth/google";
 import { createPortal } from "react-dom";
 import {
@@ -756,6 +756,74 @@ function CartDialog({ items, onClose, onBrowse, onRemove, onChangeQuantity, onCh
   );
 }
 
+function formatAssistantInline(text, keyPrefix) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) =>
+    part.startsWith("**") && part.endsWith("**")
+      ? <strong key={`${keyPrefix}-${index}`}>{part.slice(2, -2)}</strong>
+      : part
+  );
+}
+
+function AssistantReply({ content }) {
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      blocks.push({ type: "paragraph", lines: paragraph });
+      paragraph = [];
+    }
+  };
+  const flushList = () => {
+    if (list) {
+      blocks.push(list);
+      list = null;
+    }
+  };
+
+  content.split("\n").forEach((line) => {
+    const item = line.match(/^\s*([-*]|\d+\.)\s+(.+)$/);
+    if (item) {
+      flushParagraph();
+      const ordered = /^\d/.test(item[1]);
+      if (list && list.ordered !== ordered) flushList();
+      if (!list) list = { type: "list", ordered, items: [] };
+      list.items.push(item[2]);
+    } else if (!line.trim()) {
+      flushParagraph();
+      flushList();
+    } else {
+      flushList();
+      paragraph.push(line);
+    }
+  });
+  flushParagraph();
+  flushList();
+
+  return blocks.map((block, blockIndex) => {
+    if (block.type === "list") {
+      const List = block.ordered ? "ol" : "ul";
+      return (
+        <List key={`block-${blockIndex}`}>
+          {block.items.map((item, itemIndex) => (
+            <li key={`item-${itemIndex}`}>{formatAssistantInline(item, `block-${blockIndex}-item-${itemIndex}`)}</li>
+          ))}
+        </List>
+      );
+    }
+    return (
+      <p key={`block-${blockIndex}`}>
+        {block.lines.map((line, lineIndex) => (
+          <Fragment key={`line-${lineIndex}`}>
+            {lineIndex > 0 && <br />}
+            {formatAssistantInline(line, `block-${blockIndex}-line-${lineIndex}`)}
+          </Fragment>
+        ))}
+      </p>
+    );
+  });
+}
+
 function Assistant({ onClose }) {
   const [messages, setMessages] = useState([{ role: "assistant", content: "Hi, I’m your TUVA shopping assistant. What will you use your laptop for, and what’s your budget?" }]);
   const [text, setText] = useState("");
@@ -785,7 +853,9 @@ function Assistant({ onClose }) {
     <Modal title="Your AI shopping assistant" onClose={onClose} className="chat-dialog ai-dialog">
       <p className="chat-caption">Personalized laptop recommendations, comparisons, and buying advice.</p>
       <div className="message-list" aria-live="polite">{messages.map((message, index) =>
-        <p key={index} className={`message ${message.role}`}>{message.content}</p>)}
+        message.role === "assistant"
+          ? <div key={index} className="message assistant"><AssistantReply content={message.content} /></div>
+          : <p key={index} className="message user">{message.content}</p>)}
         {busy && <p className="message assistant">Finding the right fit…</p>}<div ref={bottom} /></div>
       <form className="message-form" onSubmit={send}><input aria-label="Message the AI assistant" value={text} onChange={(event) => setText(event.target.value)} placeholder="Tell me what you need…" />
         <button className="btn" disabled={busy || !text.trim()}>Send</button></form>
